@@ -1,0 +1,7 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+local_mov_store.json
+local_mov_store.cycles.jsonl
