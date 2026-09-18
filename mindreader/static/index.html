@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>LirielMindReader</title>
+<script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
+<style>
+  :root {
+    --bg: #14161c;
+    --panel: #1c1f28;
+    --panel-border: #2c303c;
+    --text: #d8dee8;
+    --text-dim: #8b93a3;
+    --accent: #f5c518;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: "Segoe UI", system-ui, sans-serif;
+    overflow: hidden;
+  }
+  #topbar {
+    position: fixed; top: 0; left: 0; right: 0; height: 56px;
+    background: var(--panel); border-bottom: 1px solid var(--panel-border);
+    display: flex; align-items: center; padding: 0 18px; gap: 16px;
+    z-index: 10;
+  }
+  #topbar h1 { font-size: 16px; margin: 0; font-weight: 600; color: var(--text); }
+  #topbar .mov-id { font-size: 12px; color: var(--text-dim); }
+  #topbar button {
+    background: var(--accent); color: #2a2000; border: none;
+    padding: 7px 14px; border-radius: 6px; font-weight: 600; cursor: pointer;
+    font-size: 13px;
+  }
+  #topbar button:hover { filter: brightness(1.08); }
+  #topbar #back-btn { background: transparent; color: var(--text); border: 1px solid var(--panel-border); }
+  #topbar .status { font-size: 12px; color: var(--text-dim); margin-left: auto; }
+  #graph { position: fixed; top: 56px; left: 0; right: 0; bottom: 0; }
+
+  #legend {
+    position: fixed; bottom: 16px; left: 16px; z-index: 10;
+    background: var(--panel); border: 1px solid var(--panel-border);
+    border-radius: 10px; padding: 10px 14px; font-size: 12px;
+    max-width: 220px;
+  }
+  #legend h3 { margin: 0 0 8px; font-size: 12px; color: var(--text-dim); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  #legend .row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+  #legend .swatch { width: 11px; height: 11px; border-radius: 50%; flex: none; }
+  #legend .swatch.objective { border: 2px solid #fff2b8; width: 9px; height: 9px; }
+  #legend .note { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--panel-border); color: var(--text-dim); line-height: 1.6; }
+  #legend .ring-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #90a4ae; vertical-align: middle; margin-right: 4px; }
+  #legend .ring-dot.neg { border: 2px solid #e05252; }
+  #legend .ring-dot.pos { border: 2px solid #4caf7d; }
+
+  #detail {
+    position: fixed; top: 56px; right: 0; bottom: 0; width: 320px;
+    background: var(--panel); border-left: 1px solid var(--panel-border);
+    padding: 18px; overflow-y: auto; transform: translateX(100%);
+    transition: transform .18s ease; z-index: 10;
+  }
+  #detail.open { transform: translateX(0); }
+  #detail h2 { margin: 0 0 4px; font-size: 18px; color: var(--accent); }
+  #detail .nature { font-size: 12px; color: var(--text-dim); margin-bottom: 14px; }
+  #detail .field { margin-bottom: 12px; }
+  #detail .field label { display: block; font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 2px; }
+  #detail .field .val { font-size: 13px; line-height: 1.4; }
+  #detail .axis-row { display: flex; justify-content: space-between; font-size: 12px; padding: 2px 0; border-bottom: 1px dotted var(--panel-border); }
+  #detail .close { position: absolute; top: 14px; right: 14px; cursor: pointer; color: var(--text-dim); font-size: 18px; background: none; border: none; }
+  #detail .close:hover { color: var(--text); }
+  #detail .nested-link {
+    background: rgba(245,197,24,0.12); color: var(--accent); border: 1px solid rgba(245,197,24,0.4);
+    padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600;
+  }
+  #detail .nested-link:hover { background: rgba(245,197,24,0.22); }
+
+  #empty-msg {
+    position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    color: var(--text-dim); font-size: 15px; flex-direction: column; gap: 10px;
+  }
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <h1>🧠 LirielMindReader</h1>
+  <button id="back-btn" style="display:none;">← Voltar</button>
+  <span class="mov-id" id="mov-id-label"></span>
+  <button id="refresh-btn">↻ Atualizar</button>
+  <span class="status" id="status-label"></span>
+</div>
+
+<div id="graph"></div>
+
+<div id="empty-msg">
+  <div>Nenhum objeto ativo na MOV no momento.</div>
+</div>
+
+<div id="legend">
+  <h3>Natureza do objeto</h3>
+  <div id="legend-rows"></div>
+  <div class="note">
+    <span class="ring-dot neg"></span> valência negativa forte (v ≤ −3)
+    <br><span class="ring-dot pos"></span> valência positiva forte (v ≥ +3)
+    <br>tamanho = intensidade da valência dominante
+  </div>
+</div>
+
+<div id="detail">
+  <button class="close" id="detail-close">✕</button>
+  <div id="detail-body"></div>
+</div>
+
+<script>
+const NATURE_LABELS = {
+  PCI: "PCI (instância cognitiva)", Person: "Pessoa", Objective: "★ Objetivo (prioridade)",
+  Situation: "Situação", Thing: "Coisa", Idea: "Ideia", Event: "Evento", Memory: "Memória",
+  Group: "Grupo", Animal: "Animal", Entity: "Entidade", Attribute: "Atributo", "Self-Process": "Processo interno",
+};
+
+let network = null;
+let lastData = null;
+let currentMovId = null;
+let movStack = []; // parent mov_ids visited on the way to the one shown now
+
+function fmtAxes(map) {
+  const entries = Object.entries(map || {});
+  if (!entries.length) return "<span style='color:var(--text-dim)'>— nenhum eixo com carga —</span>";
+  return entries.map(([k, e]) =>
+    `<div class="axis-row"><span>${k}</span><span>v=${e.v}&nbsp;&nbsp;c=${e.c}</span></div>`
+  ).join("");
+}
+
+function renderDetail(node) {
+  const d = node.detail;
+  const body = document.getElementById("detail-body");
+  let objectiveHtml = "";
+  if (d.objective) {
+    const o = d.objective;
+    objectiveHtml = `
+      <div class="field"><label>Objetivo (MS §10.6)</label><div class="val">
+        ${o.genus}${o.species ? " / " + o.species : ""} — ${o.gain_form}<br>
+        status: ${o.status} · ciclos aberto: ${o.cycles_open}<br>
+        canais: ${(o.channel_ordinances || []).join(", ") || "—"}
+      </div></div>`;
+  }
+  body.innerHTML = `
+    <h2>${d.vov_id}</h2>
+    <div class="nature">${NATURE_LABELS[d.object_nature] || d.object_nature}${d.priority ? " · prioridade " + d.priority : ""}</div>
+    <div class="field"><label>Descrição</label><div class="val">${d.brief_description || "—"}</div></div>
+    ${d.relevant_remarks ? `<div class="field"><label>Observações (relevant_remarks)</label><div class="val">${d.relevant_remarks}</div></div>` : ""}
+    <div class="field"><label>Tipo / Regime</label><div class="val">${d.object_type} · ${d.valence_regime}</div></div>
+    ${d.nested_mov ? `<div class="field"><label>MOV aninhada (MS §6.8)</label><div class="val">
+        <button class="nested-link" onclick="navigateToMov('${d.nested_mov}')">🪞 Ver ${d.nested_mov} →</button>
+      </div></div>` : ""}
+    ${objectiveHtml}
+    <div class="field"><label>Sentimentos (Feelings)</label><div class="val">${fmtAxes(d.feelings)}</div></div>
+    <div class="field"><label>Ordenanças</label><div class="val">${fmtAxes(d.ordinances)}</div></div>
+  `;
+  document.getElementById("detail").classList.add("open");
+}
+
+function buildLegend(legend) {
+  const rows = document.getElementById("legend-rows");
+  rows.innerHTML = "";
+  for (const [nature, color] of Object.entries(legend)) {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML = `<span class="swatch${nature === "Objective" ? " objective" : ""}" style="background:${color}"></span>${NATURE_LABELS[nature] || nature}`;
+    rows.appendChild(row);
+  }
+}
+
+async function loadGraph(movId) {
+  const statusEl = document.getElementById("status-label");
+  statusEl.textContent = "carregando…";
+  try {
+    const url = movId ? `/api/mov?mov_id=${encodeURIComponent(movId)}` : "/api/mov";
+    const resp = await fetch(url);
+    const data = await resp.json();
+    lastData = data;
+    currentMovId = data.mov_id;
+    document.getElementById("mov-id-label").textContent = data.mov_id;
+    document.getElementById("back-btn").style.display = movStack.length ? "inline-block" : "none";
+    document.getElementById("detail").classList.remove("open"); // stale — belonged to the previous MOV's node
+    buildLegend(data.legend);
+
+    const emptyMsg = document.getElementById("empty-msg");
+    if (!data.nodes.length) {
+      emptyMsg.style.display = "flex";
+      if (network) network.setData({ nodes: [], edges: [] });
+      statusEl.textContent = "vazio";
+      return;
+    }
+    emptyMsg.style.display = "none";
+
+    const nodes = new vis.DataSet(data.nodes);
+    const edges = new vis.DataSet(data.edges);
+    const container = document.getElementById("graph");
+    const options = {
+      physics: {
+        solver: "forceAtlas2Based",
+        forceAtlas2Based: { gravitationalConstant: -60, centralGravity: 0.008, springLength: 140, springConstant: 0.09 },
+        stabilization: { iterations: 150 },
+      },
+      interaction: { hover: true, tooltipDelay: 120 },
+      nodes: { borderWidth: 2, shadow: { enabled: true, size: 8, color: "rgba(0,0,0,0.4)" } },
+      edges: { arrows: { to: false }, hoverWidth: 1.5, selectionWidth: 1.5 },
+    };
+
+    if (network) network.destroy();
+    network = new vis.Network(container, { nodes, edges }, options);
+    network.on("click", (params) => {
+      if (params.nodes.length) {
+        const node = data.nodes.find((n) => n.id === params.nodes[0]);
+        if (node) renderDetail(node);
+      }
+    });
+    statusEl.textContent = `${data.nodes.length} objeto(s) · ${data.edges.length} relação(ões) · atualizado ${new Date().toLocaleTimeString("pt-BR")}`;
+  } catch (err) {
+    statusEl.textContent = "erro ao carregar — veja o console";
+    console.error(err);
+  }
+}
+
+function navigateToMov(movId) {
+  if (movId === currentMovId) return;
+  movStack.push(currentMovId);
+  loadGraph(movId);
+}
+
+function goBack() {
+  const prev = movStack.pop();
+  loadGraph(prev); // prev is undefined only if movStack was already empty, which the button is hidden for
+}
+
+// Note: addEventListener("click", loadGraph) directly would pass the
+// click Event itself as loadGraph's movId argument -- wrapped in an
+// arrow function so "Atualizar" reloads whichever MOV is on screen right
+// now (root or a nested one), not always jump back to the root.
+document.getElementById("refresh-btn").addEventListener("click", () => loadGraph(currentMovId));
+document.getElementById("back-btn").addEventListener("click", goBack);
+document.getElementById("detail-close").addEventListener("click", () => {
+  document.getElementById("detail").classList.remove("open");
+});
+
+loadGraph();
+</script>
+</body>
+</html>
