@@ -388,6 +388,27 @@ class VectorObjectValence(BaseModel):
     def _none_means_empty(cls, v):
         return v or []
 
+    @field_validator("updated_at", mode="before")
+    @classmethod
+    def _tolerate_malformed_updated_at(cls, v):
+        """`updated_at` is database.py bookkeeping (MS never asks for it —
+        the field it does define is `update_datetime`, a plain string,
+        MS §6.4), excluded from what prompts.py shows the model precisely
+        so it has nothing to imitate. Confirmed necessary anyway: the 12B
+        Gemma model emitted its own value here once regardless
+        ('2026-09-17T010802.000000Z' — missing separators, not valid
+        ISO-8601), which crashed the whole cycle with no existing row to
+        fall back on. A stray value here is never load-bearing — it's
+        overwritten by the database layer on the next read/write — so
+        drop anything that doesn't parse instead of failing the cycle
+        over a field the model was never supposed to set."""
+        if v is None or isinstance(v, datetime):
+            return v
+        try:
+            return datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
 
 class MatrixObjectsValence(BaseModel):
     """The MOV: Liriel's locus of attention (MS §6.2). Archived rows are
@@ -662,6 +683,32 @@ class BestPreyGuessResult(BaseModel):
     handoff_to_processcommandcontrol: Optional[HandoffToProcessCommandControl] = None
     mov_ops: List[MovOp] = Field(default_factory=list)
     notes: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_objective_nature(cls, data):
+        """`object_nature` is required on VectorObjectValence (every VOV
+        must declare its nature, MS §6.4) — correctly so everywhere else,
+        but a real crash on the 12B Gemma model: it omitted the field on
+        two `accompanying_objectives` entries, which aborted the whole
+        cycle's validation before motivation.py ever got a chance to run.
+        That's wasted concern, not a real gap: motivation.py *already*
+        force-sets object_nature="Objective" on best_prey_guess and every
+        accompanying_objectives entry unconditionally, right after this
+        validates (MS §14.6's "exactly one Objective at priority 1" is
+        enforced the same way, not trusted from the model) — whatever the
+        model does or doesn't put here for these two fields specifically
+        is discarded either way. Filling the gap before validation, only
+        when it's actually missing, just stops that known-irrelevant
+        omission from crashing the cycle before its own override runs."""
+        if isinstance(data, dict):
+            bpg = data.get("best_prey_guess")
+            if isinstance(bpg, dict):
+                bpg.setdefault("object_nature", "Objective")
+            for obj in data.get("accompanying_objectives") or []:
+                if isinstance(obj, dict):
+                    obj.setdefault("object_nature", "Objective")
+        return data
 
 
 # ---------------------------------------------------------------------------
