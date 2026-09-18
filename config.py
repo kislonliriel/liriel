@@ -26,6 +26,15 @@ def _get_bool(name: str, default: bool) -> bool:
 @dataclass(frozen=True)
 class Settings:
     # --- LLM ---
+    # "llamacpp" (default): every inference stays on the self-hosted
+    # llama-server (scripts/llamacpp/) — no closed external API sees any
+    # of Liriel's state, per the project's own decision (MS §17.6 already
+    # argues for this: weights under the implementer's control). "anthropic"
+    # switches motivation.py back to llm_client.py/litellm/Claude — kept
+    # as an escape hatch, not the default, for whenever the local setup
+    # needs to be debugged in isolation from a cognition question.
+    llm_backend: str
+    llamacpp_base_url: str
     llm_model: str
     # Model for the cycle's 3 structured-JSON calls (GRAPH_REQUEST,
     # MOV_MAINMEMORY_UPDATE, BEST_PREY_GUESS) — separate from llm_model,
@@ -100,6 +109,8 @@ class Settings:
 def load_settings() -> Settings:
     _llm_model = os.getenv("LLM_MODEL", "ollama/gemma4:26b-a4b-it-qat")
     return Settings(
+        llm_backend=os.getenv("LLM_BACKEND", "llamacpp"),
+        llamacpp_base_url=os.getenv("LLAMACPP_BASE_URL", "http://localhost:8080"),
         llm_model=_llm_model,
         # Defaults to llm_model itself — set LLM_MODEL_STRUCTURED explicitly
         # to route the 3 structured-JSON calls to a cheaper model (e.g. a
