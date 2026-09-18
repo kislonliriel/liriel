@@ -5,3 +5,7 @@ __pycache__/
 venv/
 local_mov_store.json
 local_mov_store.cycles.jsonl
+
+# Downloaded llama.cpp binaries -- large, platform-specific, not source.
+# scripts/llamacpp/start_server.sh documents how to fetch these.
+scripts/llamacpp/bin/
