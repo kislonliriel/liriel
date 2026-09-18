@@ -190,10 +190,15 @@ def run_telegram_bot() -> None:
     mov = db.load_mov(settings.default_mov_id)
     offset = None
 
+    if settings.llm_backend == "anthropic":
+        cognition_line = f"Cognition: Anthropic/litellm — {settings.llm_model}"
+    else:
+        cognition_line = f"Cognition: local llama-server — {settings.llamacpp_base_url} (make sure scripts/llamacpp/start_server.sh is running)"
+
     print("=" * 60)
     print("Liriel — Telegram front end (Ctrl+C to stop)")
-    print(f"Model: {settings.llm_model}")
-    print(f"Voice: STT={settings.stt_model}, TTS={settings.tts_model} ({settings.tts_voice})")
+    print(cognition_line)
+    print(f"Voice (STT/TTS only, still OpenAI): {settings.stt_model} / {settings.tts_model} ({settings.tts_voice})")
     print("=" * 60)
 
     try:
