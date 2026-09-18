@@ -101,13 +101,34 @@ schema validity. If you need a different model entirely, point `LLM_MODEL`
 at it instead (see "Switching models" below) — the code doesn't change,
 only `.env`.
 
+## Local inference — every call runs on a self-hosted model
+
+Since this pass, `config.py`'s `LLM_BACKEND` (default `"llamacpp"`) sends
+**all four calls of the cycle** to a self-hosted
+[llama.cpp](https://github.com/ggml-org/llama.cpp) `llama-server` process
+instead of a closed external API — no provider ever sees Liriel's MOV,
+her state, or your conversation. `"anthropic"` remains as a debugging
+escape hatch (switches back to `llm_client.py`/litellm/Claude), useful
+for telling apart a local-model quality issue from a real bug elsewhere;
+it is not the default. Voice notes (Telegram STT/TTS, below) are the one
+exception — that's I/O plumbing, not cognition, and OpenAI's cost there
+is negligible.
+
+`llamacpp_client.py` exposes the exact same `chat()`/`chat_json()`
+signature `llm_client.py` does, so `motivation.py`'s call sites don't
+know or care which backend is active — only the import at the top of
+that module switches. See "Set up local inference" below for how to run
+the server, and "Switching models later" for how to change the model
+size or roll back.
+
 ## Structure
 
 ```
 config.py       # loads .env and centralizes configuration
 models.py       # Pydantic models matching MS §6 (VOV/MOV) and §12 (query contracts)
 prompts.py      # loads the MetaScheme from docs/ + the four query templates
-llm_client.py   # LLM abstraction via litellm (Ollama/Gemma or external API)
+llm_client.py   # LLM abstraction via litellm (used when LLM_BACKEND=anthropic)
+llamacpp_client.py # same chat()/chat_json() signature, talks to a local llama-server instead
 database.py     # persistence (Postgres/Supabase, with a local JSON fallback)
 graph_service.py # TrackGraphProcess (MS §8.2) — builds the Graph of Traces
 motivation.py   # orchestrates the 4-call ProcessMotivation cycle + applies mov_ops
@@ -122,12 +143,22 @@ migrations/
 scripts/
   run_migration.py         # applies a .sql file without needing psql installed
   import_reference_mov.py  # one-time import of the reference MatrixObjectsValence_Rev000.xlsx
+  llamacpp/
+    start_server.sh  # launches llama-server (local model, warms the prompt cache)
+    client.py         # HTTP client for llama-server's /v1/chat/completions
+    warm_cache.py     # re-warms the prefix cache by hand if needed
+    bin/              # the llama-server binary itself (gitignored — see below)
+mindreader/       # standalone visual tool — see "LirielMindReader" below
+  app.py
+  static/index.html
 ```
 
 ## 1. Prerequisites
 
 - Python 3.10+
-- [Ollama](https://ollama.com) installed and running locally
+- [Ollama](https://ollama.com) installed, used only to **pull** the GGUF
+  model weights (inference itself does not go through Ollama's own
+  server — see step 3)
 - A [Supabase](https://supabase.com) account/project (or any Postgres)
 
 ## 2. Install dependencies
@@ -138,18 +169,43 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-## 3. Set up Ollama + Gemma
+## 3. Set up local inference (llama-server)
 
-Check what's already installed:
+Every call defaults to a self-hosted `llama-server` (llama.cpp), not
+Ollama's own server — llama.cpp identifies a GGUF file by its internal
+magic bytes, not its location, so it can point straight at a model
+Ollama already downloaded with no copy/rename needed.
 
-```bash
-ollama list
-```
-
-If you don't have a Gemma model, pull one (e.g. `ollama pull gemma2`). The
-default in `.env.example` is whatever model was detected in the original
-dev environment — adjust `LLM_MODEL` to match what you have. Make sure
-`ollama serve` is running before starting the chat.
+1. **Pull a model with Ollama** (used here purely as a downloader):
+   ```bash
+   ollama pull gemma4:12b-it-qat
+   ```
+   Any GGUF-format chat model works; a ~12B instruction-tuned model is a
+   reasonable default for a single consumer GPU.
+2. **Download a current `llama-server` build** from the
+   [llama.cpp releases page](https://github.com/ggml-org/llama.cpp/releases)
+   (a Vulkan or CUDA Windows build, depending on your GPU) and unzip it
+   into `scripts/llamacpp/bin/` — this folder is gitignored (it's a
+   large, platform-specific binary, not source) so each machine fetches
+   its own copy. A build that's too old will fail with "unknown model
+   architecture" on newer model families; if you hit that, grab the
+   latest release instead of an older pinned one.
+3. **Start the server:**
+   ```bash
+   ./scripts/llamacpp/start_server.sh
+   ```
+   This launches `llama-server` pointed at the model (edit the script's
+   `MODEL_DEFAULT`/`LLAMA_MODEL_SIZE` case block to match what you
+   pulled — see its header comments for the exact digest-lookup command),
+   waits for it to report healthy, then warms its in-memory prompt cache
+   with the MetaScheme so the first real call isn't the one paying to
+   process all ~18.7k tokens of it. Leave this running in its own
+   terminal while you use `main.py`/`telegram_bot.py` in another.
+4. **Rolling back / switching model size:** the script supports more
+   than one model size via one environment variable — for example,
+   `LLAMA_MODEL_SIZE=26b ./scripts/llamacpp/start_server.sh` to try a
+   larger model without touching `.env` or remembering a model's sha256
+   digest. See "Switching models later" below.
 
 ## 4. Configure `.env`
 
@@ -162,10 +218,16 @@ Copying `.env.example` over an existing `.env` destroys any credentials
 already saved there.
 
 Edit `.env`:
-- `LLM_MODEL` / `LLM_API_BASE` — already configured for local Ollama.
-- `LLM_NUM_CTX` — needs to comfortably exceed the MetaScheme's ~18.7k
-  tokens plus the MOV and schema for whichever query is running; the
-  default (40960) has margin to spare for a small MOV.
+- `LLM_BACKEND` / `LLAMACPP_BASE_URL` — already set to the local
+  `llama-server` default (`llamacpp` / `http://localhost:8080`); no
+  change needed unless you're running the server on a different port or
+  host, or want to switch to `LLM_BACKEND=anthropic` (see "Switching
+  models later").
+- `LLM_MODEL` / `LLM_API_BASE` — only read when `LLM_BACKEND=anthropic`;
+  ignored otherwise.
+- `LLM_NUM_CTX` — Ollama-only setting, also ignored under the
+  `llamacpp` backend (the server's own context size is set by
+  `start_server.sh`'s `LLAMA_CTX_SIZE`/`-c` instead — see step 3).
 - `PGHOST`, `PGUSER`, `PGPASSWORD` (and optionally `PGPORT`/`PGDATABASE`) —
   fill in with your Supabase details (Project Settings → Database → Connect
   → Direct connection or Session pooler). **Prefer these discrete fields
@@ -223,18 +285,28 @@ python main.py
 
 ## Switching models later
 
-Just edit `.env` — no code changes needed:
+**Local model size**, with an instant rollback and no digest to
+remember — the server is already stopped/restarted for this, not `.env`:
+
+```bash
+LLAMA_MODEL_SIZE=26b ./scripts/llamacpp/start_server.sh   # try a bigger model
+./scripts/llamacpp/start_server.sh                        # back to the default size
+```
+
+**Switching away from local inference entirely** (debugging escape
+hatch) — edit `.env`, no code changes needed:
+
+```env
+LLM_BACKEND=anthropic
+LLM_MODEL=claude-sonnet-5
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+or, still under `LLM_BACKEND=anthropic`:
 
 ```env
 LLM_MODEL=gpt-4o-mini
 OPENAI_API_KEY=sk-...
-```
-
-or
-
-```env
-LLM_MODEL=claude-sonnet-5
-ANTHROPIC_API_KEY=sk-ant-...
 ```
 
 ## Talking to Liriel from Telegram instead of the terminal
@@ -304,6 +376,33 @@ on. You can override that explicitly in either direction — type "manda
 isso em áudio" and get a voice reply back, or send a voice note asking her
 to answer in writing — since ProcessCommandControl's handoff (MS §12.5)
 carries that choice when you ask for it (see "Scope of this phase" above).
+
+## LirielMindReader — visualizing the MOV
+
+A standalone, read-only companion app: an interactive, Obsidian-style
+graph of whatever is currently in Liriel's MOV — independent of the main
+app (`motivation.py`/`main.py`/`telegram_bot.py`), reading the same
+database, safe to run at the same time as a live chat to watch the MOV
+change between messages.
+
+```bash
+python mindreader/app.py
+```
+
+Opens `http://localhost:5050` in your browser automatically. Each Object
+(VOV) is a node, colored by `object_nature`; Objective nodes stand out as
+gold circles with their priority number inside. Non-Objective nodes size
+themselves to their most intense Feeling axis, with a red or green ring
+once that valence crosses a significant threshold. Relations recorded in
+`mov_relations` (MS §8) become labeled edges; a bond a VOV claims via
+`relevant_relations` with no matching relation row yet becomes a dashed
+"vínculo sem registro" edge instead of being silently dropped. Clicking a
+node opens a detail panel with its full field set; a Person/PCI with a
+materialized nested MOV (MS §6.8) gets a 🪞 link there to jump into that
+agent's own focus and back.
+
+It has no write path at all — purely a window onto `database.py`'s own
+tables, using the same `.env` the main app does.
 
 ## Next steps (Phase 2, out of scope here)
 
