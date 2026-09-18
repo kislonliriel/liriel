@@ -14,12 +14,22 @@ LLM call — turns Query 1's `requests` into the real GraphOfTraces (MS §8),
 traversing mov_relations (the store WRITE_RELATION/SOFTEN_CHARGE write to)
 across the focus and the archive.
 
-Calls 1-3 are structured-JSON extraction, not the voice the user actually
-hears — they run on config.py's LLM_MODEL_STRUCTURED (a cheaper model, e.g.
-a Claude Haiku, when set), while call 4 stays on LLM_MODEL, since that's
-the one call where model quality is directly audible/readable to the user.
-Both default to the same value, so this is opt-in (.env), not a behavior
-change on its own.
+Backend (config.py's LLM_BACKEND, default "llamacpp"): all four calls run
+against a self-hosted llama-server (scripts/llamacpp/) — every inference
+stays under the implementer's own control, no closed external API sees
+Liriel's state (MS §17.6 "weight ownership"). Voice notes (Telegram STT/
+TTS) are the one exception, still OpenAI via llm_client.py — that's I/O
+plumbing, not cognition, and the cost there is negligible. Setting
+LLM_BACKEND=anthropic switches all four calls to llm_client.py/litellm/
+Claude instead, as a debugging escape hatch — not the default.
+
+When LLM_BACKEND=anthropic, calls 1-3 (structured-JSON extraction, not
+the voice the user actually hears) run on config.py's LLM_MODEL_STRUCTURED
+(a cheaper model, e.g. a Claude Haiku, when set), while call 4 stays on
+LLM_MODEL, since that's the one call where model quality is directly
+audible/readable to the user. Both default to the same value, so this is
+opt-in (.env), not a behavior change on its own. llamacpp_client.py has no
+equivalent split — one local server serves all four.
 """
 from __future__ import annotations
 
@@ -28,8 +38,19 @@ from typing import List, Optional
 from pydantic import ValidationError
 
 import graph_service
+from config import settings
 from database import Database
-from llm_client import chat, chat_json
+
+# config.LLM_BACKEND picks which of the two ends up bound to chat/chat_json
+# here — both modules expose the same (messages, temperature, effort, model)
+# signature, so nothing below this needs to know which one it's actually
+# talking to. Default is "llamacpp" (self-hosted, scripts/llamacpp/):
+# every inference stays under your own control, no closed external API —
+# "anthropic" is the escape hatch back to llm_client.py/litellm/Claude.
+if settings.llm_backend == "anthropic":
+    from llm_client import chat, chat_json
+else:
+    from llamacpp_client import chat, chat_json
 from models import (
     Artifacts,
     AxisValence,
@@ -52,7 +73,6 @@ from prompts import (
     build_reply_prompt,
     build_update_prompt,
 )
-from config import settings
 
 
 def _validate_or_log(model_cls, raw: dict, label: str):
