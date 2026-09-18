@@ -43,11 +43,22 @@ META_SCHEME = _METASCHEME_PATH.read_text(encoding="utf-8")
 # Helpers
 # ---------------------------------------------------------------------------
 
+# database.py bookkeeping, not MS §6.4 fields — never part of the VOV JSON
+# form (§12.2) the model is asked to emit, and hidden from what it's shown
+# here for the same reason: a smaller local model (confirmed on the 12B
+# Gemma) will otherwise imitate whatever it sees literal values for,
+# inventing its own `updated_at` in a malformed, non-ISO format
+# ("2026-09-17T010802.000000Z") that then fails Pydantic validation and
+# aborts the whole cycle — MS itself only ever asks for `update_datetime`
+# (a plain string, MS §6.4), which stays visible below.
+_INTERNAL_VOV_FIELDS = {"updated_at", "archived"}
+
+
 def _mov_json(mov: MatrixObjectsValence) -> str:
     """Only active (non-archived) rows go to the model — archived rows are
     the MainMemory side of the same table (MS §7), not the focus (MS §6.2)."""
     active = MatrixObjectsValence(mov_id=mov.mov_id, objects=mov.active())
-    return active.model_dump_json(indent=2)
+    return active.model_dump_json(indent=2, exclude={"objects": {"__all__": _INTERNAL_VOV_FIELDS}})
 
 
 def _graph_json(graph_of_traces) -> str:
@@ -73,7 +84,10 @@ def _nested_movs_json(artifacts: Artifacts) -> str:
         )
         owner_desc = f"{owner.vov_id} ({owner.brief_description})" if owner else "unknown"
         active = MatrixObjectsValence(mov_id=nested.mov_id, objects=nested.active())
-        blocks.append(f"# owner: {owner_desc}\n{active.model_dump_json(indent=2)}")
+        blocks.append(
+            f"# owner: {owner_desc}\n"
+            f"{active.model_dump_json(indent=2, exclude={'objects': {'__all__': _INTERNAL_VOV_FIELDS}})}"
+        )
     return "\n\n".join(blocks)
 
 
