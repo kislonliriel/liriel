@@ -20,7 +20,15 @@ for _stream in (sys.stdout, sys.stderr):
 
 from config import settings
 from database import get_database
-from llm_client import chat
+
+# Same backend switch as motivation.py (config.LLM_BACKEND) — kept here too
+# so `python main.py --check` actually tests whichever backend the real
+# cycle runs on, instead of always probing Anthropic regardless of the
+# active setting.
+if settings.llm_backend == "anthropic":
+    from llm_client import chat
+else:
+    from llamacpp_client import chat
 from motivation import run_motivation_cycle
 
 EXIT_WORDS = {"exit", "quit", "bye", "sair"}
@@ -29,7 +37,10 @@ EXIT_WORDS = {"exit", "quit", "bye", "sair"}
 def selftest() -> bool:
     ok = True
 
-    print(f"-> Testing LLM (model={settings.llm_model}, api_base={settings.llm_api_base})...")
+    if settings.llm_backend == "anthropic":
+        print(f"-> Testing LLM (model={settings.llm_model}, api_base={settings.llm_api_base})...")
+    else:
+        print(f"-> Testing LLM (local llama-server at {settings.llamacpp_base_url})...")
     try:
         reply = chat(
             [{"role": "user", "content": "Reply with exactly one word: OK"}],
@@ -57,9 +68,14 @@ def chat_loop() -> None:
     db = get_database()
     mov = db.load_mov(settings.default_mov_id)
 
+    cognition_line = (
+        f"Cognition: Anthropic/litellm — {settings.llm_model}"
+        if settings.llm_backend == "anthropic"
+        else f"Cognition: local llama-server — {settings.llamacpp_base_url}"
+    )
     print("=" * 60)
     print("Liriel — Phase 1 MVP (type 'exit' to quit)")
-    print(f"Model: {settings.llm_model}")
+    print(cognition_line)
     print("=" * 60)
 
     try:
