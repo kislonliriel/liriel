@@ -190,6 +190,7 @@ def run_motivation_cycle(
     )
     db.upsert_object(mov.mov_id, guess)
     mov.upsert(guess)
+    ranked_ids = [guess.vov_id]
     for i, obj in enumerate(decision_result.accompanying_objectives):
         obj = obj.model_copy(
             update={
@@ -199,8 +200,11 @@ def run_motivation_cycle(
         )
         db.upsert_object(mov.mov_id, obj)
         mov.upsert(obj)
+        ranked_ids.append(obj.vov_id)
     _apply_mov_ops(db, mov.mov_id, decision_result.mov_ops)
 
+    mov = db.load_mov(mov.mov_id)
+    _renumber_stale_objectives(db, mov, ranked_ids)
     mov = db.load_mov(mov.mov_id)
 
     # --- Phase 1 bridge: compose the actual chat reply --------------------
@@ -433,6 +437,41 @@ def _upsert_nested_row(db: Database, mov_id: str, raw_row: dict) -> None:
               f"object to patch onto, skipped: {raw_row}")
         return
     db.upsert_object(mov_id, vov)
+
+
+def _renumber_stale_objectives(db: Database, mov: MatrixObjectsValence, ranked_ids: List[str]) -> None:
+    """MS §14.6: "exactly one Objective at priority 1, priorities unique
+    and contiguous." The block above already enforces this on the
+    Objectives Query 3 actually ranked this cycle (best_prey_guess +
+    accompanying_objectives, priorities 1, 2, 3, ...) — but any OTHER
+    Objective row already active in the MOV from an earlier cycle, and
+    not archived/reprioritized by this cycle's retrospective or mov_ops,
+    keeps whatever priority it already had. Query 2's retrospective step
+    is a per-cycle model judgment call on which open Objectives to
+    revisit, not a guarantee every one gets reviewed every cycle — seen
+    for real: an old "Quésia" Objective sat at priority 1 for several
+    cycles after the conversation moved on, alongside whatever each new
+    cycle's own guess also claimed priority 1 for, until 4 different
+    Objectives were simultaneously "priority 1" in the same MOV. Left
+    alone that's not just a MindReader display quirk: it's the invariant
+    this comment already claimed to enforce, silently broken the moment
+    an old Objective outlives the cycle that created it.
+
+    Renumbers every active Objective NOT in `ranked_ids` (this cycle's own
+    ranking) to continue right after it, ordered by whatever priority it
+    already had (ties broken by vov_id for determinism) — restoring
+    unique, contiguous priorities across the *whole* active Objective set
+    rather than just this cycle's own picks.
+    """
+    others = sorted(
+        (o for o in mov.active() if o.object_nature == "Objective" and o.vov_id not in ranked_ids),
+        key=lambda o: (o.priority if o.priority is not None else 10**9, o.vov_id),
+    )
+    next_priority = len(ranked_ids) + 1
+    for obj in others:
+        if obj.priority != next_priority:
+            db.upsert_object(mov.mov_id, obj.model_copy(update={"priority": next_priority}))
+        next_priority += 1
 
 
 def _resolve_id(db: Database, proposed_id: str) -> str:
