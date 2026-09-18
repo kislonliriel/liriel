@@ -548,6 +548,21 @@ class MovOp(BaseModel):
     into: Optional[List[Dict]] = None                     # SPLIT_VOV
     reason: Optional[str] = None
 
+    @field_validator("op", mode="before")
+    @classmethod
+    def _normalize_op(cls, v):
+        """RetrospectiveAction (this same query's `retrospective` list, MS
+        §12.3) has its own "REPRIORITIZE" for an Objective's outcome
+        review. A model reasoning about an ordinary mov_op that also
+        happens to change a VOV's priority sometimes reaches for that
+        same word instead of MovOpName's own "SET_PRIORITY" — seen for
+        real from the 12B Gemma model, carrying the exact vov_id/priority
+        shape SET_PRIORITY already expects. Remapping the name is enough;
+        motivation.py's existing SET_PRIORITY handler needs no change."""
+        if isinstance(v, str) and v.strip().upper() == "REPRIORITIZE":
+            return "SET_PRIORITY"
+        return v
+
 
 NestedMovOpName = Literal["CREATE_NESTED_MOV", "PATCH_NESTED_VOV", "ARCHIVE_NESTED_MOV"]
 
