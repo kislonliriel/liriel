@@ -328,7 +328,15 @@ task: >
   not just restore whichever one and leave the rest of its history behind: \
   RESTORE_VOV/PATCH_VOV the one you keep with every distinct fact folded \
   in from ALL of them, then ARCHIVE_VOV the other node(s) now redundant \
-  with it. SEARCH is for genuine identity ambiguity: you have a name or reference \
+  with it. The opposite error is just as real (MS §6.9): a single existing \
+  node turning out to have been two distinct real things tracked as one — \
+  the user may say so directly ("you mixed up X's Y with Z's Y") or it may \
+  surface on your own reading of what's now in front of you. Either way, \
+  `SPLIT_VOV` that row into the two it should have been, each keeping only \
+  the facts that genuinely belong to it; the original is archived by the \
+  split, not left standing while a fresh row is minted beside it — a new \
+  Object next to the still-confused old one has not corrected anything. \
+  SEARCH is for genuine identity ambiguity: you have a name or reference \
   and aren't sure it lacks a row already — a spelling variant, a partial \
   description, someone mentioned once before under different wording. It \
   is NOT the default move for everything ScenarioData introduces. When \
@@ -464,21 +472,36 @@ query: BEST_PREY_GUESS
 task: >
   Apply MS §11.1 step 5 and the decision doctrine of MS §13. Elect the Best-Prey \
   Guess as a judgment (MS §1.2), never as an arg-max over valences. Read the \
-  scene as a field of hunts (MS §13.2) before committing. If GraphOfTraces \
-  surfaced something directly relevant to ScenarioData that Query 2 hasn't \
-  already folded into the MOV above, you may still act on it here — e.g. \
-  naming it in `information_needed`/`notes`, or in \
-  `handoff_to_processcommandcontrol` so the reply step can use it. If \
+  scene as a field of hunts (MS §13.2) before committing. ScenarioData is \
+  ProcessMotivation's own INPUT (MS §9.1) — how this cycle learns what is \
+  happening in the savanna — never an output the reply step re-enters \
+  through the handoff. If ScenarioData contains a fact substantial enough \
+  that the reply will need it — a name, a detail, a piece of someone's \
+  account — and Query 2 hasn't already folded it into the MOV above, close \
+  that gap yourself, right here, one of two ways: `UPSERT_VOV`/`PATCH_VOV` \
+  it via this query's own `mov_ops` (MS §12.5 allows it, same as Query 2's \
+  own), or restate the fact itself, in your own words, inside the handoff's \
+  own fields (`why_now`, `objective_summary`, etc.) — not a pointer back to \
+  ScenarioData for the reply step to go re-read. \
+  "Use Michele's account of what happened" or "the details Fabio just gave" \
+  is exactly the failure this forbids: confirmed for real, a handoff worded \
+  this way sent the reply step straight back into ScenarioData for the \
+  substance of what to say, and the fact (Fátima's own conduct, in that \
+  case) was never written to a single MOV row, an Objective that will \
+  outlive this cycle only in ScenarioData's own retired copy of it. If \
   identity or context genuinely remains unresolved even after GraphOfTraces, \
   that uncertainty is itself legitimate information for the handoff — it \
-  is not a failure to paper over. If GraphOfTraces carries an \
+  is not a failure to paper over, and is not the same thing as a fact you \
+  already have in hand and are simply declining to record. If GraphOfTraces \
+  carries an \
   `unresolved_searches` list, Query 2 searched MainMemory for those terms \
   and found nothing — MS §8.6 gives you exactly two ways to close that, \
   not a third where it's just left open: if ScenarioData already makes \
-  clear who/what it is, `UPSERT_VOV` it yourself right here (this query's \
-  own `mov_ops` allow it, MS §12.5); if it genuinely doesn't, name it in \
-  `information_needed` or the handoff so the reply step asks rather than \
-  using the name/detail in prose while it stays unrecorded — a detail \
+  clear who/what it is, `UPSERT_VOV` it yourself right here; if it \
+  genuinely doesn't, name the gap itself (not a pointer to go re-read \
+  ScenarioData) in `information_needed` or the handoff so the reply step \
+  asks rather than using the name/detail in prose while it stays \
+  unrecorded — a detail \
   Liriel can say once but not retrieve again next cycle is worse than not \
   mentioning it at all. The \
   Guess must name \
@@ -587,7 +610,11 @@ task: >
   One describes, the other decides, the first carries out." Every \
   substantive fact you report — a name, a request, what happened, what \
   she'll do — must trace back to the Best-Prey Guess, its handoff, or the \
-  MOV/nested-MOV/GraphOfTraces artifacts above. MS §11's rule of \
+  MOV/nested-MOV/GraphOfTraces artifacts above — the handoff's own WORDS, \
+  not a pointer inside it back to the user's message ("use what she told \
+  you", "the details he just gave") for you to go re-read: that pointer is \
+  not itself the fact, and following it anyway is the same ownership \
+  violation one step removed. MS §11's rule of \
   ownership reserves deciding what matters for ProcessMotivation alone: \
   reaching past those artifacts into the user's raw message for a fact \
   that isn't reflected in any of them is exactly the ownership violation \
