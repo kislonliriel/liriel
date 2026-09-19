@@ -91,6 +91,8 @@ def _nested_movs_json(artifacts: Artifacts) -> str:
     return "\n\n".join(blocks)
 
 
+
+
 def _cycle_id(scenario_data) -> str:
     return f"cycle_{scenario_data.timestamp.strftime('%Y%m%d_%H%M%S')}"
 
@@ -169,9 +171,27 @@ task: >
   this cycle — MS §12.1: "include in focus_objects every Object whose bonds \
   could change the decision, including Objects you expect the archive to \
   hold but the focus does not. Do not request the whole archive: request \
-  the Objects." Emit one `requests` entry per distinct set of Objects/kinds/ \
-  depth worth surveying together (usually just one). Emit `requests: []` if \
-  nothing in the MOV or the ScenarioData calls for a graph this cycle. \
+  the Objects." A new or unrecognized speaker asking whether Liriel knows \
+  or remembers them, or simply naming a bond to an Object already active \
+  in the MOV (e.g. claiming to be a friend, coworker, or relative of \
+  someone Liriel currently has in focus), is exactly this case even with \
+  no explicit "do you remember me" wording: request that active Object's \
+  own relations (a `requests` entry with `focus_objects: [that Object's \
+  vov_id]`, `include_archive: true`, `depth` 2 or more) so any bond \
+  already recorded for them in the archive can surface before Query 2 has \
+  to decide whether the new speaker is someone Liriel already knows. This \
+  applies to any Object, not only a person: a Situation, Event or Objective \
+  the ScenarioData describes can be just as archived-and-unreachable as a \
+  person is. (Separately, MS §12.4 SEARCH already runs a keyword/fuzzy \
+  match against the whole archive every cycle and folds whatever it finds \
+  into GraphOfTraces automatically, whether or not you request it — this \
+  `focus_objects` request is for surveying someone/something already \
+  active, which search alone wouldn't need to look for.) Do \
+  not wait for an explicit memory request to do this — a stranger naming \
+  someone in focus is itself the trigger. Emit one `requests` entry per \
+  distinct set of Objects/kinds/depth worth surveying together (usually \
+  just one). Emit `requests: []` if nothing in the MOV or the ScenarioData \
+  calls for a graph this cycle. \
   Set `deep_recall_requested: true` on a request ONLY when the user's own \
   message explicitly insists, or asks Liriel directly, to make a real effort \
   to remember something specific (e.g. "please really try to remember...", \
@@ -235,7 +255,13 @@ _UPDATE_EXAMPLE = """\
         "reason": "up to 25 words — only when what's reported is one party's own reading, not Liriel's" }
     ]
   },
-  "mainmemory_commands": [],
+  "mainmemory_commands": [
+    { "op": "WRITE_RELATION", "from": "VOV_0002", "to": "VOV_0000",
+      "kind": "friendship", "propositional": "up to 20 words",
+      "affective": [{"axis": "LoveAngerEros", "v": 2}], "confidence": 3 },
+    { "op": "SEARCH", "query": "up to 6 words of your own best search terms",
+      "reason": "why GraphOfTraces didn't already resolve this — up to 20 words" }
+  ],
   "focus_size_after": 5,
   "notes": "up to 40 words, or empty string"
 }"""
@@ -252,7 +278,7 @@ ARTIFACT: MOV ({artifacts.mov.mov_id})
 ARTIFACT: Nested MOV(s) (MS §6.8 — specular recursion; one per Object with a nested_mov pointer)
 {_nested_movs_json(artifacts)}
 
-ARTIFACT: GraphOfTraces
+ARTIFACT: GraphOfTraces (MS §8.3 — includes both what GRAPH_REQUEST asked to survey AND whatever MS §12.4 SEARCH found in MainMemory by keyword/fuzzy match on this message, any Object nature, with its relations already pulled in around it; a node's optional "relevance" score reflects that match, ranked ahead of emotional charge and recency)
 {_graph_json(artifacts.graph_of_traces)}
 
 ARTIFACT: ScenarioData
@@ -277,15 +303,79 @@ task: >
   Apply MS §11.1 step 3. Retrospective: for every Objective row still open \
   from a previous cycle, decide what became of it (SET_DELTA_REPORT / \
   KEEP_PENDING / KEEP_PENDING_URGENT / ARCHIVE / REPRIORITIZE / ABANDON — \
-  MS §10.5, §10.7, §13.4). Prospective: emit the mov_ops needed for what the \
+  MS §10.5, §10.7, §13.4). Always fill that entry's `reason`, whatever the \
+  action — this is the Objective's own interim report (MS §10.8), written \
+  back onto its row, not a throwaway note: if nothing changed, say so \
+  ("no feedback yet", "still pending, nothing new this cycle") rather than \
+  leaving it blank; ScenarioData's own outcomes_of_pending_objectives \
+  (when Phase 2 adds a real ProcessCommandControl call — Phase 1 reads the \
+  raw message directly instead) is exactly the kind of evidence this \
+  reason should draw on. Prospective: emit the mov_ops needed for what the \
   ScenarioData changes, what newly enters focus, and what should leave for \
   the archive (ARCHIVE_VOV, never delete — MS §12.3 constraints). Before \
   UPSERT_VOV-ing a Person/Thing/etc. the ScenarioData mentions, check \
-  GraphOfTraces.nodes first — if one already names that same real-world \
-  entity (e.g. a MainMemory node labeled "Mike, ..."), RESTORE_VOV/PATCH_VOV \
-  that existing vov_id instead of minting a new one; a graph node is there \
-  precisely so you don't have to re-identify someone the archive already \
-  knows. When what the ScenarioData reports about a third party is one \
+  GraphOfTraces.nodes first, for ANY object_nature (a Person, a Situation, \
+  an Event, an Objective — not just named people) — if one already names \
+  that same real-world entity or topic, even worded or spelled slightly \
+  differently than the ScenarioData does ("Michele" vs "Michelle" is one \
+  example of this, not the only shape it takes; some nodes there arrived \
+  via MS §12.4 SEARCH's own keyword/fuzzy match, not just from ids you \
+  named yourself), RESTORE_VOV/PATCH_VOV that existing vov_id instead of \
+  minting a new one — a graph node is there precisely so you don't have to \
+  re-identify something the archive already knows. If GraphOfTraces.nodes \
+  lists MORE THAN ONE node for what is really the same thing (this happens \
+  when earlier cycles already fragmented it under separate vov_ids), do \
+  not just restore whichever one and leave the rest of its history behind: \
+  RESTORE_VOV/PATCH_VOV the one you keep with every distinct fact folded \
+  in from ALL of them, then ARCHIVE_VOV the other node(s) now redundant \
+  with it. SEARCH is for genuine identity ambiguity: you have a name or reference \
+  and aren't sure it lacks a row already — a spelling variant, a partial \
+  description, someone mentioned once before under different wording. It \
+  is NOT the default move for everything ScenarioData introduces. When \
+  ScenarioData gives a full, unambiguous new introduction — a name plus \
+  enough context that there is no real question of who or what this is (a \
+  sibling named with their relationship, a new situation fully described) \
+  — UPSERT_VOV it directly, this same cycle; do not default to searching \
+  and deferring just because it is new. Every concrete person, thing, \
+  event or situation ScenarioData introduces this cycle must end this \
+  call as either a real Object (new or patched) or a SEARCH aimed at \
+  resolving it — never as prose that exists only in ScenarioData's own \
+  sentence. This is not optional bookkeeping: MS §11's rule of ownership \
+  makes ProcessMotivation the only place that decides what matters, and \
+  neither the Best-Prey Guess nor the reply that carries it out may \
+  introduce a fact that never reached the MOV here — a name mentioned \
+  only in ScenarioData's own text is invisible to every step downstream, \
+  however clearly it was said, and unrecoverable next cycle since nothing \
+  new was ever written to search for. (Confirmed for real: three new \
+  family members introduced by name and relationship in one message were \
+  left to a SEARCH instead of created directly; the SEARCH came back \
+  empty and nothing followed up on it; the eventual reply used their \
+  names anyway, sourced straight from the raw message rather than from \
+  anything this query had actually decided — its own separate failure, \
+  see build_reply_prompt.) When identity genuinely IS ambiguous, emit a \
+  SEARCH mainmemory_command (MS §12.4) with your own best search terms — \
+  {{"op": "SEARCH", "query": "...", "reason": "..."}} — worded however \
+  you think MainMemory is most likely to describe it (not necessarily the \
+  ScenarioData's own words). It runs immediately against the whole \
+  archive and its results — WITH their own relations pulled in, the same \
+  as any other graph anchor — reach Query 3 (BEST_PREY_GUESS) as an \
+  updated GraphOfTraces, so you do not have to resolve identity in this \
+  same call — this is how Liriel keeps searching her own memory instead \
+  of having to settle it in one guess, the way a person pages back \
+  through what they remember before answering. \
+  Whenever a VOV's own `relevant_relations` names a bond to another \
+  Object — a new UPSERT_VOV's list, or one PATCH_VOV adds to an existing \
+  row — also emit the matching `WRITE_RELATION` mainmemory_command (MS \
+  §12.4): {{"op": "WRITE_RELATION", "from": <this vov_id>, "to": <the other \
+  vov_id>, "kind": "...", "propositional": "up to 20 words", "affective": \
+  [], "confidence": 1-5}}. `relevant_relations` only tells you and future-\
+  you that the bond exists; `mov_relations` (what WRITE_RELATION actually \
+  writes) is the only thing GRAPH_REQUEST/TrackGraphProcess (MS §8) can \
+  walk into later from an Object that's back in focus — a bond that lives \
+  only in `relevant_relations` is invisible to every future graph request, \
+  however clearly this cycle stated it, and the archive loses the thread \
+  connecting the two the moment both drop out of focus. When what the \
+  ScenarioData reports about a third party is one \
   interested party's own characterization of another — Fábio calling Mike \
   proud, controlling, a manipulator — that is Fábio's reading, not \
   Liriel's independent one, and MS §5.9's low-confidence direct patch onto \
@@ -360,7 +450,7 @@ ARTIFACT: Updated MOV ({artifacts.mov.mov_id})
 ARTIFACT: Nested MOV(s) (MS §6.8)
 {_nested_movs_json(artifacts)}
 
-ARTIFACT: GraphOfTraces
+ARTIFACT: GraphOfTraces (MS §8.3 — includes both what GRAPH_REQUEST asked to survey AND whatever MS §12.4 SEARCH found by keyword/fuzzy match this cycle, any Object nature, relations already pulled in around it; possibly rebuilt after Query 2's own SEARCH mainmemory_command)
 {_graph_json(artifacts.graph_of_traces)}
 
 ARTIFACT: ScenarioData (for reference — already applied to the MOV above)
@@ -374,7 +464,24 @@ query: BEST_PREY_GUESS
 task: >
   Apply MS §11.1 step 5 and the decision doctrine of MS §13. Elect the Best-Prey \
   Guess as a judgment (MS §1.2), never as an arg-max over valences. Read the \
-  scene as a field of hunts (MS §13.2) before committing. The Guess must name \
+  scene as a field of hunts (MS §13.2) before committing. If GraphOfTraces \
+  surfaced something directly relevant to ScenarioData that Query 2 hasn't \
+  already folded into the MOV above, you may still act on it here — e.g. \
+  naming it in `information_needed`/`notes`, or in \
+  `handoff_to_processcommandcontrol` so the reply step can use it. If \
+  identity or context genuinely remains unresolved even after GraphOfTraces, \
+  that uncertainty is itself legitimate information for the handoff — it \
+  is not a failure to paper over. If GraphOfTraces carries an \
+  `unresolved_searches` list, Query 2 searched MainMemory for those terms \
+  and found nothing — MS §8.6 gives you exactly two ways to close that, \
+  not a third where it's just left open: if ScenarioData already makes \
+  clear who/what it is, `UPSERT_VOV` it yourself right here (this query's \
+  own `mov_ops` allow it, MS §12.5); if it genuinely doesn't, name it in \
+  `information_needed` or the handoff so the reply step asks rather than \
+  using the name/detail in prose while it stays unrecorded — a detail \
+  Liriel can say once but not retrieve again next cycle is worse than not \
+  mentioning it at all. The \
+  Guess must name \
   at least one channel Ordinance (MS §14.7) and a gain_form consistent with its \
   genus/species (MS §10.6). Check MS §13.7 (what disqualifies a candidate) and \
   MS §14 (invariants) before emitting. Valid Feeling axis keys: {AXIS_KEYS}. \
@@ -436,6 +543,9 @@ says rather than guessing or inventing a relationship.
 ARTIFACT: Nested MOVs materialized so far (MS §6.8 specular recursion — \
 one party's read of another, distinct from Liriel's own)
 {_nested_movs_json(artifacts)}
+
+ARTIFACT: GraphOfTraces (MS §8.3 — Objects and relations pulled from MainMemory this cycle, whether requested by id or found by MS §12.4 SEARCH's keyword/fuzzy match; use this before saying she doesn't know something)
+{_graph_json(artifacts.graph_of_traces)}
 """
         if artifacts is not None
         else ""
@@ -455,7 +565,8 @@ Personality/Culture/BodyFeatures — the banks that narrow those channels \
 into *her* particular way of acting, MS §5):
 {self_json}
 {mov_block}
-ARTIFACT: The user's message
+ARTIFACT: The user's message (for language, tone and acknowledging you heard \
+correctly — NOT a source of content, see task below)
 {scenario_text!r}
 
 ARTIFACT: This turn's elected objective (Best-Prey Guess, MS §12.5)
@@ -467,17 +578,44 @@ ARTIFACT: Handoff notes (why_now, constraints, etc. — for your own consistency
 QUERY
 process: Phase-1 embodiment bridge (no MS §12 contract)
 task: >
-  Voice the reply in first person, as Liriel. Per MS §4.7/§5/§13.6, the \
-  objective above is what she is after; her VOV_0000 above is what makes \
-  the pursuit of it distinctly hers rather than a generic assistant's — \
-  the same demand run through a different Ordinance mix and a different \
-  Character/Personality would come out as a different move entirely. Let \
-  her Ordinances in operation and her Restrictive Schemas visibly shape \
-  *how* she says this: word choice, warmth, directness, how much she \
-  hedges or commits — not just *what* she reports. If the user asks about \
-  a person or thing, ground the answer in the MOV/nested-MOV artifacts \
-  above rather than inventing facts; if nothing there matches, say \
-  honestly that she doesn't know. Do not narrate the schema values or cite \
+  Voice the reply in first person, as Liriel. This call stands in for \
+  ProcessCommandControl "conducting the action in the world" (MS §11) — it \
+  CARRIES OUT what ProcessMotivation already decided; it does not take a \
+  second, independent pass over the user's message to decide what to say. \
+  MS §11.2: "the Best-Prey Guess is at once the point of arrival of \
+  ProcessMotivation and the point of departure of ProcessCommandControl. \
+  One describes, the other decides, the first carries out." Every \
+  substantive fact you report — a name, a request, what happened, what \
+  she'll do — must trace back to the Best-Prey Guess, its handoff, or the \
+  MOV/nested-MOV/GraphOfTraces artifacts above. MS §11's rule of \
+  ownership reserves deciding what matters for ProcessMotivation alone: \
+  reaching past those artifacts into the user's raw message for a fact \
+  that isn't reflected in any of them is exactly the ownership violation \
+  that rule forbids, however fluent and natural the result reads. The \
+  user's message above is for language, tone and confirming you understood \
+  what arrived — not a second channel of content parallel to the \
+  artifacts above. If the user's message raises something the artifacts \
+  above don't reflect, that is this cycle's ProcessMotivation step not \
+  having processed it yet, not something to patch over here — reply from \
+  what the Best-Prey Guess and handoff actually give you, warmly \
+  acknowledging the rest was heard without inventing engagement with \
+  specifics that were never decided. Per MS §4.7/§5/§13.6, her VOV_0000 \
+  above is what makes the pursuit of the objective distinctly hers rather \
+  than a generic assistant's — the same demand run through a different \
+  Ordinance mix and a different Character/Personality would come out as a \
+  different move entirely. Let her Ordinances in operation and her \
+  Restrictive Schemas visibly shape *how* she says this: word choice, \
+  warmth, directness, how much she hedges or commits — not just *what* \
+  she reports. If the user asks about a person or thing, ground the \
+  answer in the MOV/nested-MOV/GraphOfTraces artifacts above rather than \
+  inventing facts. If, even after all of that, she genuinely can't place \
+  who or what is being referred to, say so honestly and — like a person \
+  who can't quite recall someone — ask a natural clarifying question that \
+  would actually help (how they know each other, when this was, who else \
+  was involved), rather than either fabricating detail or flatly refusing \
+  to engage. Whatever the user answers becomes ScenarioData for the next \
+  cycle's own memory search, so a good question here is itself part of \
+  how she keeps looking. Do not narrate the schema values or cite \
   MS sections; inhabit them. Reply in the same language the user wrote in. \
   Output plain text only: no JSON, no markdown fences, no stage directions.
 
