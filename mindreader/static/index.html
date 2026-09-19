@@ -144,6 +144,30 @@ function renderDetail(node) {
         canais: ${(o.channel_ordinances || []).join(", ") || "—"}
       </div></div>`;
   }
+  // MS §11.2's "point of departure" for ProcessCommandControl — the
+  // handoff never lives on the VOV row itself, only in the cycle that
+  // actually elected this Objective as best_prey_guess (mindreader/app.py
+  // _latest_bpg_info). This is the ONLY content the reply is allowed to
+  // draw on beyond the MOV/GraphOfTraces (MS §11's rule of ownership) —
+  // showing it here is what lets you check the reply against it.
+  let bpgHtml = "";
+  if (d.last_elected_as_bpg) {
+    const b = d.last_elected_as_bpg;
+    const h = b.handoff_to_processcommandcontrol || {};
+    const list = (arr) => (arr && arr.length) ? `<ul>${arr.map(x => `<li>${x}</li>`).join("")}</ul>` : "—";
+    bpgHtml = `
+      <div class="field"><label>Handoff ao ProcessCommandControl (MS §12.5 — eleita BPG em ${b.cycle_id || "?"})</label><div class="val">
+        <b>Por que agora:</b> ${h.why_now || "—"}<br>
+        <b>Resumo do objetivo:</b> ${h.objective_summary || "—"}<br>
+        <b>Ganhos esperados:</b> ${h.expected_gains_summary || "—"}<br>
+        <b>Informação necessária:</b> ${list(h.information_needed)}
+        <b>Restrições:</b> ${list(h.constraints)}
+        <b>Critérios de sucesso:</b> ${list(h.success_criteria)}
+        <b>Critérios de falha:</b> ${list(h.failure_criteria)}
+        <b>Reportar de volta:</b> ${list(h.report_back)}
+        ${b.notes ? `<b>Notas da Query 3:</b> ${b.notes}<br>` : ""}
+      </div></div>`;
+  }
   body.innerHTML = `
     <h2>${d.vov_id}</h2>
     <div class="nature">${NATURE_LABELS[d.object_nature] || d.object_nature}${d.priority ? " · prioridade " + d.priority : ""}</div>
@@ -154,6 +178,7 @@ function renderDetail(node) {
         <button class="nested-link" onclick="navigateToMov('${d.nested_mov}')">🪞 Ver ${d.nested_mov} →</button>
       </div></div>` : ""}
     ${objectiveHtml}
+    ${bpgHtml}
     <div class="field"><label>Sentimentos (Feelings)</label><div class="val">${fmtAxes(d.feelings)}</div></div>
     <div class="field"><label>Ordenanças</label><div class="val">${fmtAxes(d.ordinances)}</div></div>
   `;
