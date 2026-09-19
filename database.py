@@ -19,7 +19,7 @@ import re
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from config import settings
 from models import AxisValence, MatrixObjectsValence, SchemaEntry, VectorObjectValence
@@ -113,6 +113,30 @@ class Database(ABC):
         ...
 
     @abstractmethod
+    def get_recent_scenario_texts(self, mov_id: str, limit: int = 3) -> List[str]:
+        """The raw message text of the last `limit` cycles for this mov,
+        most recent first — gives graph_service.search_memory a short
+        conversational window instead of just this one message in
+        isolation, so a pronoun-based follow-up ("quem é o marido DELA?")
+        can still resolve to whoever the previous turn was actually about."""
+
+    @abstractmethod
+    def get_recent_decision_results(self, mov_id: str, limit: int = 200) -> List[dict]:
+        """Query 3's (BEST_PREY_GUESS, MS §12.5) full output for the last
+        `limit` cycles of this mov, most recent first, skipping cycles that
+        never reached Query 3 (a crash earlier in the cycle, MS §11.1). The
+        Best-Prey Guess VOV persisted in mov_objects carries only its own
+        `brief_description` (MS §6.4, ≤25 words) — the handoff to
+        ProcessCommandControl (why_now, constraints, success/failure
+        criteria, report_back — MS §12.5's own `handoff_to_processcommandcontrol`
+        block, MS §11.2's "point of departure") lives only here, once per
+        cycle it was actually elected, never on the row itself. MindReader
+        uses this to show, for whichever Objective was actually the
+        elected prey, the handoff that MS §11's rule of ownership makes
+        the ONLY legitimate source of what the reply may say — not a
+        second, informal one Liriel calls up from raw conversation text."""
+
+    @abstractmethod
     def write_relation(
         self,
         from_vov_id: str,
@@ -144,6 +168,16 @@ class Database(ABC):
         TrackGraphProcess (graph_service.py) is the one reader who needs
         the archive and the focus at once. One hop; graph_service does its
         own multi-hop traversal by calling this again on newly-reached ids."""
+
+    @abstractmethod
+    def get_all_objects(self, mov_id: str) -> List[VectorObjectValence]:
+        """Every row (active or archived, any object_nature) in this mov —
+        unlike get_relations/get_objects, this has no starting vov_id to key
+        off of, because it exists for exactly the case where nothing does
+        yet: graph_service.search_memory (MS §12.4 SEARCH) scans this whole
+        set to keyword/fuzzy-match a fresh message's content against
+        MainMemory, since GRAPH_REQUEST's own traversal can only reach an
+        Object the model already has an id or a linked bond for."""
 
     def ensure_mov(self, mov_id: str, label: Optional[str] = None) -> None:
         """Create the `movs` container row a nested MOV needs before any VOV
@@ -281,6 +315,13 @@ class PostgresDatabase(Database):
             rows = cur.fetchall()
             valences = self._load_valences(cur, [r["vov_id"] for r in rows])
         return {r["vov_id"]: self._row_to_vov(r, valences.get(r["vov_id"], {})) for r in rows}
+
+    def get_all_objects(self, mov_id: str) -> List[VectorObjectValence]:
+        with self._conn.cursor(cursor_factory=self._extras.RealDictCursor) as cur:
+            cur.execute("select * from mov_objects where mov_id = %s", (mov_id,))
+            rows = cur.fetchall()
+            valences = self._load_valences(cur, [r["vov_id"] for r in rows])
+        return [self._row_to_vov(r, valences.get(r["vov_id"], {})) for r in rows]
 
     def get_object_mov_id(self, vov_id: str) -> Optional[str]:
         with self._conn.cursor() as cur:
@@ -466,6 +507,24 @@ class PostgresDatabase(Database):
                 ),
             )
 
+    def get_recent_scenario_texts(self, mov_id: str, limit: int = 3) -> List[str]:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "select scenario_data from motivation_cycles where mov_id = %s "
+                "order by created_at desc limit %s",
+                (mov_id, limit),
+            )
+            return [row[0] for row in cur.fetchall()]
+
+    def get_recent_decision_results(self, mov_id: str, limit: int = 200) -> List[dict]:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "select decision_result from motivation_cycles where mov_id = %s "
+                "and decision_result is not null order by created_at desc limit %s",
+                (mov_id, limit),
+            )
+            return [row[0] for row in cur.fetchall()]
+
     def close(self) -> None:
         self._conn.close()
 
@@ -525,6 +584,14 @@ class JsonFileDatabase(Database):
         if raw is None:
             return None
         return raw.get("_mov_id", settings.default_mov_id)
+
+    def get_all_objects(self, mov_id: str) -> List[VectorObjectValence]:
+        data = self._load_all()
+        return [
+            VectorObjectValence.model_validate(v)
+            for v in data.values()
+            if v.get("_mov_id", settings.default_mov_id) == mov_id
+        ]
 
     def upsert_object(self, mov_id: str, vov: VectorObjectValence) -> None:
         data = self._load_all()
@@ -609,6 +676,36 @@ class JsonFileDatabase(Database):
         }
         with self._log_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+
+    def get_recent_scenario_texts(self, mov_id: str, limit: int = 3) -> List[str]:
+        if not self._log_path.exists():
+            return []
+        lines = self._log_path.read_text(encoding="utf-8").splitlines()
+        texts = []
+        for line in reversed(lines):
+            if not line.strip():
+                continue
+            entry = json.loads(line)
+            if entry.get("mov_id") == mov_id:
+                texts.append(entry.get("scenario_data", ""))
+            if len(texts) >= limit:
+                break
+        return texts
+
+    def get_recent_decision_results(self, mov_id: str, limit: int = 200) -> List[dict]:
+        if not self._log_path.exists():
+            return []
+        lines = self._log_path.read_text(encoding="utf-8").splitlines()
+        results = []
+        for line in reversed(lines):
+            if not line.strip():
+                continue
+            entry = json.loads(line)
+            if entry.get("mov_id") == mov_id and entry.get("decision_result"):
+                results.append(entry["decision_result"])
+            if len(results) >= limit:
+                break
+        return results
 
 
 # ---------------------------------------------------------------------------
