@@ -155,7 +155,13 @@ function renderDetail(node) {
     const b = d.last_elected_as_bpg;
     const h = b.handoff_to_processcommandcontrol || {};
     const list = (arr) => (arr && arr.length) ? `<ul>${arr.map(x => `<li>${x}</li>`).join("")}</ul>` : "—";
+    // MS §11.2's rule of ownership, made checkable: the reply below is
+    // supposed to trace ONLY to the handoff that follows it (or the
+    // MOV/GraphOfTraces), never to raw ScenarioData. Showing the full,
+    // actual text — not a summary — is what lets that be verified against
+    // real data instead of taken on trust.
     bpgHtml = `
+      <div class="field"><label>Resposta enviada nesse ciclo (texto completo, MS §11 — ProcessCommandControl)</label><div class="val" style="white-space:pre-wrap;">${b.response_text || "— nenhuma resposta registrada para esse ciclo —"}</div></div>
       <div class="field"><label>Handoff ao ProcessCommandControl (MS §12.5 — eleita BPG em ${b.cycle_id || "?"})</label><div class="val">
         <b>Por que agora:</b> ${h.why_now || "—"}<br>
         <b>Resumo do objetivo:</b> ${h.objective_summary || "—"}<br>
