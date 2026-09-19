@@ -12,7 +12,12 @@ Four LLM calls per cycle:
 Between 1 and 2, TrackGraphProcess (graph_service.py) — a service, not an
 LLM call — turns Query 1's `requests` into the real GraphOfTraces (MS §8),
 traversing mov_relations (the store WRITE_RELATION/SOFTEN_CHARGE write to)
-across the focus and the archive.
+across the focus and the archive. Two more services run alongside it:
+graph_service.search_memory, once per cycle against the raw message, and
+again right after Query 2 against any SEARCH mainmemory_commands it
+emitted — together a real implementation of MS §12.4 SEARCH (keyword/fuzzy
+matching over every Object's own text, any nature, not just names), which
+this codebase only ever logged as unimplemented before now.
 
 Backend (config.py's LLM_BACKEND, default "llamacpp"): all four calls run
 against a self-hosted llama-server (scripts/llamacpp/) — every inference
@@ -110,6 +115,33 @@ def run_motivation_cycle(
     scenario = ScenarioData(text=user_text, source=source)
     nested_movs = _load_nested_movs(db, mov, settings.nested_mov_max_depth)
 
+    # A short window of recent conversation, not just this one message in
+    # isolation -- resolves a pronoun-based follow-up ("quem é o marido
+    # DELA?") that carries no name of its own but clearly continues what
+    # the last turn was about. Confirmed for real: without this, a
+    # follow-up like that scored zero relevance against every Object in
+    # MainMemory, including the very Person the conversation was already
+    # about (whose own row had, by then, aged out of the cheap contextual
+    # pool too). Used for automatic search and relevance ranking only —
+    # log_cycle below still stores just this message, and Query 2's own
+    # deliberate SEARCH command (run_search_commands) keeps using only the
+    # terms the model itself chose.
+    recent_texts = db.get_recent_scenario_texts(mov.mov_id, limit=3)
+    search_context_text = "\n".join(list(reversed(recent_texts)) + [user_text]) if recent_texts else user_text
+
+    # MS §12.4 SEARCH, run automatically every cycle against that context:
+    # keyword/fuzzy-matches every Object in MainMemory (any nature, active
+    # or archived) so something nothing currently in focus points to (a
+    # fresh speaker, a topic raised again after weeks, a name typed with a
+    # different spelling) can still be found. This only finds *ids* — the
+    # graph built below is what pulls in their relations too,
+    # automatically, not gated on the model remembering to ask for them
+    # (confirmed for real: it doesn't always ask).
+    auto_hits = [c["vov_id"] for c in graph_service.search_memory(db, mov, search_context_text)]
+    if settings.verbose and auto_hits:
+        print(f"[debug] memory search hits: {auto_hits}")
+    auto_requests = graph_service.requests_from_ids(auto_hits, reason="auto: matched by memory search")
+
     # --- Query 1: GRAPH_REQUEST (MS §12.1) ---------------------------------
     graph_artifacts = Artifacts(
         meta_scheme=META_SCHEME, mov=mov, nested_movs=nested_movs,
@@ -126,8 +158,31 @@ def run_motivation_cycle(
     if settings.verbose:
         print(f"[debug] GRAPH_REQUEST: {graph_request.model_dump_json(indent=2)}")
 
+    # deep_recall_requested (MS §12.1): the user explicitly insisted Liriel
+    # make a real effort to remember something. Until now this only raised
+    # GRAPH_MAX_NODES on a traversal from an already-known anchor — it did
+    # nothing for the automatic search above, so a weak/wrong contextual
+    # hit could still cut a deliberately-insisted-on search short before it
+    # ever reached the full archive. Force it here: redo that search with
+    # force_blind=True so an explicit "please really try to remember"
+    # always gets the real, unrestricted lookup, not just a bigger cap on
+    # whatever the cheap pass already (maybe wrongly) settled on.
+    if any(r.deep_recall_requested for r in graph_request.requests):
+        auto_hits = [
+            c["vov_id"]
+            for c in graph_service.search_memory(db, mov, search_context_text, force_blind=True)
+        ]
+        if settings.verbose:
+            print(f"[debug] deep_recall_requested — forced blind search hits: {auto_hits}")
+        auto_requests = graph_service.requests_from_ids(auto_hits, reason="auto: deep recall, forced blind search")
+
     # --- Graph generation: TrackGraphProcess (service, not an LLM call) ---
-    graph_of_traces = graph_service.build_graph_of_traces(db, graph_request.requests)
+    # Whatever the model itself asked to survey, PLUS whatever memory
+    # search found on its own — one graph, one traversal, ranked by
+    # (relevance to this message, emotional charge, recency) in that order.
+    graph_of_traces = graph_service.build_graph_of_traces(
+        db, list(graph_request.requests) + auto_requests, scenario_text=search_context_text
+    )
     if settings.verbose and graph_of_traces:
         boosted = any(r.deep_recall_requested for r in graph_request.requests)
         print(
@@ -153,9 +208,58 @@ def run_motivation_cycle(
         print(f"[debug] MOV_MAINMEMORY_UPDATE: {update_result.model_dump_json(indent=2)}")
 
     _apply_retrospective(db, update_result)
-    _apply_mov_ops(db, mov.mov_id, update_result.prospective.mov_ops)
+    id_remap = _apply_mov_ops(db, mov.mov_id, update_result.prospective.mov_ops)
+    if id_remap:
+        _relink_new_objects(db, mov.mov_id, id_remap)
+        update_result.mainmemory_commands = _remap_mainmemory_commands(
+            update_result.mainmemory_commands, id_remap
+        )
+        update_result.prospective.nested_mov_ops = [
+            op.model_copy(update={"owner_vov_id": id_remap.get(op.owner_vov_id, op.owner_vov_id)})
+            if op.owner_vov_id else op
+            for op in update_result.prospective.nested_mov_ops
+        ]
     _apply_mainmemory_commands(db, update_result.mainmemory_commands)
     _apply_nested_mov_ops(db, update_result.prospective.nested_mov_ops)
+
+    # MS §12.4 SEARCH, run for real with Query 2's own terms — this is what
+    # lets Liriel "think about it some more" instead of having to resolve
+    # an unrecognized name/topic in one shot: Query 2 names what it's
+    # looking for (a SEARCH mainmemory_command), the search runs
+    # immediately against the terms it chose (not just the raw message),
+    # and the graph is rebuilt to include whatever turns up — same cycle,
+    # before Query 3 runs.
+    search_hits = [c["vov_id"] for c in graph_service.run_search_commands(db, mov, update_result.mainmemory_commands)]
+    if search_hits:
+        if settings.verbose:
+            print(f"[debug] Query 2 SEARCH hits: {search_hits}")
+        graph_of_traces = graph_service.build_graph_of_traces(
+            db,
+            list(graph_request.requests) + auto_requests
+            + graph_service.requests_from_ids(search_hits, reason="Query 2's own SEARCH"),
+            scenario_text=search_context_text,
+        )
+    else:
+        search_queries = [
+            cmd.get("query") for cmd in update_result.mainmemory_commands
+            if isinstance(cmd, dict) and cmd.get("op") == "SEARCH" and cmd.get("query")
+        ]
+        if search_queries:
+            # MS §8.6: a SEARCH that finds nothing is the exact signal that
+            # something is genuinely new — it is not a dead end to drop
+            # silently. Without this, Query 3 never learns Query 2 even
+            # looked, so neither of §8.6's two paths (create it / ask about
+            # it) gets taken by default. Confirmed for real: a SEARCH for
+            # three new family members Query 2 itself asked for came back
+            # empty, Query 3 proceeded as if no search had been attempted,
+            # and the reply used their names from the raw ScenarioData
+            # anyway — nothing looked wrong in the reply text, but none of
+            # them were ever written to MainMemory, so the next cycle that
+            # needs one of them starts from zero again.
+            graph_of_traces = dict(graph_of_traces) if graph_of_traces else {
+                "artifact": "GraphOfTraces", "requested_for": [], "nodes": [], "edges": [],
+            }
+            graph_of_traces["unresolved_searches"] = search_queries
 
     mov = db.load_mov(mov.mov_id)  # reload: reflects everything Query 2 just did
     # nested_mov_ops may have just created/changed one — recompute rather
@@ -163,8 +267,6 @@ def run_motivation_cycle(
     nested_movs = _load_nested_movs(db, mov, settings.nested_mov_max_depth)
 
     # --- Query 3: BEST_PREY_GUESS (MS §12.5) ------------------------------
-    # Same graph Query 2 saw: MS §8.2 builds it once per cycle, at
-    # ProcessMotivation's request (Query 1) — it isn't re-surveyed per query.
     decision_artifacts = Artifacts(
         meta_scheme=META_SCHEME, mov=mov, nested_movs=nested_movs,
         graph_of_traces=graph_of_traces, scenario_data=scenario,
@@ -188,7 +290,7 @@ def run_motivation_cycle(
             "priority": 1, "valence_regime": "Delta", "object_nature": "Objective",
         }
     )
-    db.upsert_object(mov.mov_id, guess)
+    _upsert_and_link(db, mov.mov_id, guess)
     mov.upsert(guess)
     ranked_ids = [guess.vov_id]
     for i, obj in enumerate(decision_result.accompanying_objectives):
@@ -198,7 +300,7 @@ def run_motivation_cycle(
                 "priority": i + 2, "valence_regime": "Delta", "object_nature": "Objective",
             }
         )
-        db.upsert_object(mov.mov_id, obj)
+        _upsert_and_link(db, mov.mov_id, obj)
         mov.upsert(obj)
         ranked_ids.append(obj.vov_id)
     _apply_mov_ops(db, mov.mov_id, decision_result.mov_ops)
@@ -247,48 +349,87 @@ def _apply_retrospective(db: Database, update_result: MovMainMemoryUpdateResult)
             print(f"[warning] retrospective action on unknown vov_id={entry.vov_id!r}, skipped")
             continue
 
+        # MS §10.8: the interim report is not optional — whatever this
+        # cycle learned (or didn't) about a still-open Objective is written
+        # back onto its own row via relevant_remarks, not only argued for
+        # in this turn's own JSON and then lost the moment the cycle ends.
+        # "No feedback yet" is as legitimate an entry here as "partially
+        # attained" — the trail is what makes the eventual delta_report
+        # traceable, not just its final number. Applies regardless of
+        # which action fires; previously only SET_DELTA_REPORT persisted
+        # anything, and even that ignored `reason` in favor of the
+        # delta_report's own attribution_note.
+        updates: dict = {"relevant_remarks": entry.reason} if entry.reason else {}
+
         if entry.action == "SET_DELTA_REPORT":
-            db.upsert_object(mov_id, existing.model_copy(update={"delta_report": entry.delta_report}))
+            updates["delta_report"] = entry.delta_report
         elif entry.action in ("KEEP_PENDING", "KEEP_PENDING_URGENT"):
             if entry.new_priority is not None:
-                db.upsert_object(mov_id, existing.model_copy(update={"priority": entry.new_priority}))
+                updates["priority"] = entry.new_priority
         elif entry.action == "REPRIORITIZE":
-            db.upsert_object(mov_id, existing.model_copy(update={"priority": entry.new_priority}))
+            updates["priority"] = entry.new_priority
         elif entry.action in ("ARCHIVE", "ABANDON"):
             if _is_protected(entry.vov_id):
                 print(f"[notice] refused to archive protected vov_id={entry.vov_id!r} (core identity)")
                 continue
             if entry.action == "ABANDON" and existing.objective is not None:
-                obj = existing.objective.model_copy(update={"status": "abandoned"})
-                db.upsert_object(mov_id, existing.model_copy(update={"objective": obj}))
+                updates["objective"] = existing.objective.model_copy(update={"status": "abandoned"})
+
+        if updates:
+            existing = existing.model_copy(update=updates)
+            _upsert_and_link(db, mov_id, existing)
+
+        if entry.action in ("ARCHIVE", "ABANDON"):
             db.archive_object(entry.vov_id)
 
 
-def _apply_mov_ops(db: Database, mov_id: str, ops: list) -> None:
+def _apply_mov_ops(db: Database, mov_id: str, ops: list) -> dict:
+    """Applies MS §12.3 mov_ops; returns `id_remap` — {model-guessed vov_id:
+    real persisted vov_id} for every row this call minted (UPSERT_VOV/
+    SPLIT_VOV never trust the model's own id for a genuinely new row, see
+    below). run_motivation_cycle uses this to fix up anything ELSE in this
+    same Query 2 response that referenced one of those guessed ids before
+    the real one was known.
+
+    Confirmed for real: Query 2 introduced three new Person rows in one
+    cycle (a sibling, his wife, their son) under its own guessed ids, then
+    emitted a WRITE_RELATION between two of them naming those same guessed
+    ids — one didn't match the id actually assigned, and the relation
+    write crashed on a foreign-key violation naming a vov_id that was
+    never inserted anywhere. Not minting the model's own id was already
+    correct (it can't know what's actually next, and trusting it risks a
+    collision) — the gap was never propagating the swap to the rest of
+    this cycle's own output, which is very much still expected to be
+    internally consistent."""
+    id_remap: dict = {}
     for op in ops:
         op: MovOp
         if op.op == "UPSERT_VOV" and op.vov is not None:
-            existing = db.get_object(op.vov.get("vov_id")) if op.vov.get("vov_id") else None
+            model_id = op.vov.get("vov_id")
+            existing = db.get_object(model_id) if model_id else None
             vov = _coerce_vov(existing, op.vov)
             if vov is None:
                 print(f"[warning] UPSERT_VOV missing required fields and no existing "
                       f"object to patch onto, skipped: {op.vov}")
                 continue
             if existing is None:  # genuinely new — don't trust the model's own id
-                vov = vov.model_copy(update={"vov_id": db.next_vov_id()})
-            db.upsert_object(mov_id, vov)
+                real_id = db.next_vov_id()
+                if model_id and model_id != real_id:
+                    id_remap[model_id] = real_id
+                vov = vov.model_copy(update={"vov_id": real_id})
+            _upsert_and_link(db, mov_id, vov)
         elif op.op == "PATCH_VOV" and op.vov_id and op.patch:
             existing = db.get_object(op.vov_id)
             if existing is None:
                 print(f"[warning] PATCH_VOV on unknown vov_id={op.vov_id!r}, skipped")
                 continue
             merged = existing.model_copy(update=_coerce_patch(existing, op.patch))
-            db.upsert_object(mov_id, merged)
+            _upsert_and_link(db, mov_id, merged)
         elif op.op == "SET_PRIORITY" and op.vov_id:
             existing = db.get_object(op.vov_id)
             if existing is None:
                 continue
-            db.upsert_object(mov_id, existing.model_copy(update={"priority": op.priority}))
+            _upsert_and_link(db, mov_id, existing.model_copy(update={"priority": op.priority}))
         elif op.op == "ARCHIVE_VOV" and op.vov_id:
             if _is_protected(op.vov_id):
                 print(f"[notice] refused to archive protected vov_id={op.vov_id!r} (core identity)")
@@ -307,10 +448,59 @@ def _apply_mov_ops(db: Database, mov_id: str, ops: list) -> None:
                     continue
                 # Every piece is a genuinely new object — the original id
                 # (op.vov_id) was just archived, so it's never reused here.
-                piece = piece.model_copy(update={"vov_id": db.next_vov_id()})
-                db.upsert_object(mov_id, piece)
+                piece_model_id = raw_piece.get("vov_id") if isinstance(raw_piece, dict) else None
+                real_id = db.next_vov_id()
+                if piece_model_id and piece_model_id != real_id:
+                    id_remap[piece_model_id] = real_id
+                piece = piece.model_copy(update={"vov_id": real_id})
+                _upsert_and_link(db, mov_id, piece)
         else:
             print(f"[warning] unrecognized or incomplete mov_op: {op.model_dump()}")
+
+    return id_remap
+
+
+def _relink_new_objects(db: Database, mov_id: str, id_remap: dict) -> None:
+    """Second pass, only over rows minted this same batch (see
+    _apply_mov_ops): a relevant_relations entry naming a SIBLING new
+    object by its model-guessed id couldn't be linked when
+    _ensure_relation_edges first ran for it — that sibling didn't exist in
+    the DB yet at that point, so the existence check silently skipped it,
+    same as it would for any genuinely-missing id. Now that every sibling
+    minted this cycle has its real id, remap any stale guesses still
+    sitting in relevant_relations and retry the link."""
+    for real_id in id_remap.values():
+        vov = db.get_object(real_id)
+        if vov is None or not vov.relevant_relations:
+            continue
+        remapped_relations = [id_remap.get(r, r) for r in vov.relevant_relations]
+        if remapped_relations != vov.relevant_relations:
+            vov = vov.model_copy(update={"relevant_relations": remapped_relations})
+            db.upsert_object(mov_id, vov)
+        _ensure_relation_edges(db, vov)
+
+
+def _remap_mainmemory_commands(commands: list, id_remap: dict) -> list:
+    """MS §12.4 commands are raw dicts straight from the model's own JSON
+    (not re-validated against vov_ids that exist), so a WRITE_RELATION (or
+    RETRIEVE/ARCHIVE/SOFTEN_CHARGE) naming one of this cycle's own
+    just-minted objects by its pre-remap guessed id needs the same fix-up
+    _apply_mov_ops's id_remap gives everything else, or it fails the same
+    way against the real archive (WRITE_RELATION: a foreign-key violation;
+    the others: a silent no-op on an id nothing ever used)."""
+    if not id_remap:
+        return commands
+    remapped = []
+    for cmd in commands:
+        cmd = dict(cmd)
+        if cmd.get("from") in id_remap:
+            cmd["from"] = id_remap[cmd["from"]]
+        if cmd.get("to") in id_remap:
+            cmd["to"] = id_remap[cmd["to"]]
+        if cmd.get("vov_ids"):
+            cmd["vov_ids"] = [id_remap.get(v, v) for v in cmd["vov_ids"]]
+        remapped.append(cmd)
+    return remapped
 
 
 def _load_nested_movs(db: Database, mov: MatrixObjectsValence, max_depth: int) -> list:
@@ -362,7 +552,7 @@ def _apply_nested_mov_ops(db: Database, ops: list) -> None:
                     # the default one, but an owner can itself be a row
                     # inside another nested MOV — a deeper mirror level).
                     owner_mov_id = db.get_object_mov_id(op.owner_vov_id) or settings.default_mov_id
-                    db.upsert_object(owner_mov_id, owner.model_copy(update={"nested_mov": op.mov_id}))
+                    _upsert_and_link(db, owner_mov_id, owner.model_copy(update={"nested_mov": op.mov_id}))
             for raw_row in (op.rows or []):
                 _upsert_nested_row(db, op.mov_id, raw_row)
         elif op.op == "PATCH_NESTED_VOV" and op.vov_id and op.patch:
@@ -391,7 +581,7 @@ def _apply_nested_mov_ops(db: Database, ops: list) -> None:
                 _upsert_nested_row(db, op.mov_id, seed)
                 continue
             merged = existing.model_copy(update=_coerce_patch(existing, op.patch))
-            db.upsert_object(op.mov_id, merged)
+            _upsert_and_link(db, op.mov_id, merged)
         elif op.op == "ARCHIVE_NESTED_MOV":
             # No separate "archived" flag on a MOV itself — MainMemory
             # already works per-row (archived_at); archiving every row
@@ -436,7 +626,7 @@ def _upsert_nested_row(db: Database, mov_id: str, raw_row: dict) -> None:
         print(f"[warning] nested row missing required fields and no existing "
               f"object to patch onto, skipped: {raw_row}")
         return
-    db.upsert_object(mov_id, vov)
+    _upsert_and_link(db, mov_id, vov)
 
 
 def _renumber_stale_objectives(db: Database, mov: MatrixObjectsValence, ranked_ids: List[str]) -> None:
@@ -470,8 +660,50 @@ def _renumber_stale_objectives(db: Database, mov: MatrixObjectsValence, ranked_i
     next_priority = len(ranked_ids) + 1
     for obj in others:
         if obj.priority != next_priority:
-            db.upsert_object(mov.mov_id, obj.model_copy(update={"priority": next_priority}))
+            _upsert_and_link(db, mov.mov_id, obj.model_copy(update={"priority": next_priority}))
         next_priority += 1
+
+
+def _ensure_relation_edges(db: Database, vov: VectorObjectValence) -> None:
+    """Every relation a VOV claims via `relevant_relations` (MS §6.4)
+    becomes a real, walkable `mov_relations` edge (MS §8) — a lightweight
+    "associated" fallback wherever nothing more specific already connects
+    the pair — regardless of whether the model also remembered to emit its
+    own WRITE_RELATION mainmemory_command this cycle. `relevant_relations`
+    and `mov_relations` are different things (MS §6.4 vs §8), and
+    prompts.py already asks the model to keep them in sync, but a small
+    local model doesn't always comply. Confirmed for real: Sebastiana
+    (VOV_0035) correctly listed Eduardo (VOV_0032) in her own
+    `relevant_relations` — and had zero rows in `mov_relations` — so once
+    she aged out of the active focus, TrackGraphProcess's traversal had no
+    edge to walk to reach her from Eduardo (or vice versa) ever again, and
+    a later "who is her husband?" found every Objective *about* contacting
+    her but never the one row that actually says who he is. This closes
+    that gap unconditionally, at the point every VOV gets written, instead
+    of trusting the model to keep asking for it."""
+    if not vov.relevant_relations:
+        return
+    existing_edges = db.get_relations([vov.vov_id])
+    connected = {
+        (row["from_vov_id"] if row["to_vov_id"] == vov.vov_id else row["to_vov_id"])
+        for row in existing_edges
+    }
+    for other_id in vov.relevant_relations:
+        if other_id == vov.vov_id or other_id in connected:
+            continue
+        if db.get_object(other_id) is None:
+            continue  # relevant_relations can point at a stale/typo'd id -- don't invent an edge to nothing
+        db.write_relation(from_vov_id=vov.vov_id, to_vov_id=other_id, kind="associated")
+        connected.add(other_id)
+
+
+def _upsert_and_link(db: Database, mov_id: str, vov: VectorObjectValence) -> None:
+    """db.upsert_object, plus _ensure_relation_edges right after — every
+    write path in this module should go through this instead of calling
+    db.upsert_object directly, so no VOV can end up claiming a relation in
+    its own `relevant_relations` that the actual graph can't walk to."""
+    db.upsert_object(mov_id, vov)
+    _ensure_relation_edges(db, vov)
 
 
 def _resolve_id(db: Database, proposed_id: str) -> str:
@@ -586,11 +818,14 @@ def _coerce_patch(existing: VectorObjectValence, patch: dict) -> dict:
 
 
 def _apply_mainmemory_commands(db: Database, commands: list) -> None:
-    """MS §12.4. RETRIEVE/ARCHIVE/WRITE_RELATION/SOFTEN_CHARGE are executed;
-    SEARCH still needs a real semantic/full-text index over the archive —
-    Phase 2 — and is only logged here (the model isn't left to depend on it:
-    GRAPH_REQUEST + TrackGraphProcess is the working path back into
-    MainMemory as of this phase)."""
+    """MS §12.4. RETRIEVE/ARCHIVE/WRITE_RELATION/SOFTEN_CHARGE are executed
+    here directly. SEARCH is also fully executed now (graph_service.
+    search_memory/run_search_commands — MS §12.4's free-text lookup,
+    finally a real implementation, not name-specific) — but *not* here:
+    it returns data Query 3 needs to see, not just a side effect to apply,
+    so run_motivation_cycle calls graph_service.run_search_commands
+    directly right after this function, once, over the whole commands list,
+    rather than per-command like the others below."""
     for cmd in commands:
         op = cmd.get("op")
         if op == "RETRIEVE":
@@ -613,5 +848,7 @@ def _apply_mainmemory_commands(db: Database, commands: list) -> None:
             )
         elif op == "SOFTEN_CHARGE":
             db.soften_charge(cmd.get("vov_ids", []))
+        elif op == "SEARCH":
+            pass  # handled by graph_service.run_search_commands, not here
         else:
-            print(f"[notice] MainMemory command not executed (Phase 2): {cmd}")
+            print(f"[notice] unrecognized MainMemory command: {cmd}")
