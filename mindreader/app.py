@@ -94,13 +94,19 @@ def _dominant_valence(feelings: dict) -> Optional[tuple]:
 def _latest_bpg_info(db, mov_id: str, objective_vov_ids: list) -> dict:
     """For each Objective vov_id, the most recent cycle (if any) where it
     was actually elected as Query 3's best_prey_guess (MS §12.5) — its
-    handoff to ProcessCommandControl, current_tactical_scene and notes.
-    None of this lives on the VOV row itself: mov_objects only ever keeps
-    the row's own brief_description (MS §6.4, ≤25 words), never the
-    handoff MS §11.2 calls ProcessCommandControl's "point of departure" —
-    that only ever existed once, in that cycle's own Query 3 output. An
+    handoff to ProcessCommandControl, current_tactical_scene, notes, AND
+    the full chat reply that cycle actually sent (Phase 1's
+    ProcessCommandControl stand-in). None of this lives on the VOV row
+    itself: mov_objects only ever keeps the row's own brief_description
+    (MS §6.4, ≤25 words), never the handoff MS §11.2 calls
+    ProcessCommandControl's "point of departure" — that, and the reply it
+    supposedly produced, only ever existed once, in that cycle's own
+    output. Showing the actual reply text alongside the handoff (not a
+    summary of either) is what makes MS §11's rule of ownership — the
+    reply must trace to this handoff, not to raw ScenarioData — something
+    a person can check against real data instead of taking on trust. An
     Objective still open but no longer priority 1 shows its most recent
-    handoff from whenever it last WAS elected, which is still useful
+    handoff/reply from whenever it last WAS elected, which is still useful
     context even though a fresher one hasn't been written since."""
     remaining = set(objective_vov_ids)
     info: dict = {}
@@ -117,6 +123,7 @@ def _latest_bpg_info(db, mov_id: str, objective_vov_ids: list) -> dict:
                 "handoff_to_processcommandcontrol": decision.get("handoff_to_processcommandcontrol"),
                 "current_tactical_scene": decision.get("current_tactical_scene"),
                 "notes": decision.get("notes"),
+                "response_text": decision.get("response_text"),
             }
             remaining.discard(vid)
     return info
