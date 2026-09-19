@@ -92,6 +92,24 @@ class LlamaCppClient:
             "cache_prompt": True,  # default true anyway; explicit for clarity
             "repeat_penalty": 1.1,  # safety net against the runaway-repetition
             # failure mode seen in testing, independent of the chat-template fix
+            # llama.cpp's CLI treats repeat_last_n=-1 as "whole context", but
+            # this server's HTTP API validates it strictly as an unsigned int
+            # (0 <= value <= 2147483647) and rejects -1 outright with a 400 --
+            # confirmed for real, and a worse regression than the 64-token
+            # default this was meant to fix, since it broke every call rather
+            # than just the rare reasoning-loop one. 100000 is a plain large
+            # positive number instead: comfortably above start_server.sh's own
+            # default context size (98304, LLAMA_CTX_SIZE) and any realistic
+            # n_predict this project sets, so llama.cpp's own internal min()
+            # against the actual context/generation length makes it behave
+            # the same as "whole context" without tripping the validator.
+            # Needed at all because the 64-token default window is far
+            # shorter than the ~200-word reasoning_content paragraph a local
+            # model was seen looping on, verbatim, dozens of times, until
+            # n_predict cut it off with the actual JSON `content` never
+            # reached -- too long a repeat unit for the default window to
+            # ever even see, let alone penalize.
+            "repeat_last_n": 100000,
             **sampling,
         }
         try:
