@@ -258,6 +258,20 @@ The Objects of the game are not islands: they are tied by relations, affective a
 
 Edge `kind` is open vocabulary; prefer: `kinship`, `marriage`, `friendship`, `alliance`, `rivalry`, `debt`, `grievance`, `authority`, `care`, `membership`, `causation`, `part_of`, `about`, `history`.
 
+**8.4 Ranking what the graph keeps.** When a request draws in more archived Objects than the graph can carry, what stays is chosen by three criteria, in this exact order — each one only breaks a tie left by the one before it, never outweighs it:
+
+1. **Relevance to the current context** — how much the Object's own content bears on what is being dealt with now.
+2. **Emotional charge** (§7's own "affective weight") — breaks a tie in relevance.
+3. **Recency** — breaks a tie left by both of the above.
+
+This is **not** a weighted sum of the three: it is a strict priority. A highly relevant but old, mildly-charged memory outranks an irrelevant but recent, heavily-charged one.
+
+**8.5 Finding an Object without its id.** Not every Object worth surveying has a known id yet: someone introducing themselves again, a topic returning after a long gap, a name spelled slightly differently than the row already on record. In these cases SEARCH (§12.4) is the entry point — it finds the Object by what it *is*, not by an id already in hand. Finding it is not enough on its own: once found, it must feed the same graph-building process an already-known id would, its relevant relations to other Objects pulled in with it, not left behind as an isolated hit. Searching and tracing the graph are, in practice, one operation with two ways in.
+
+**8.6 When the search does not resolve.** Sometimes neither the graph nor the search returns a clear match — what is being said may genuinely match nothing on record, or the ambiguity may be too real to settle alone. That uncertainty is legitimate information to pass forward, not a failure to conceal: Liriel may ask a clarifying question, the way a person would when they cannot quite place someone. The answer becomes the next cycle's own ScenarioData, run through this same process again — identification need not resolve in a single cycle.
+
+**8.7 Effort and its cost.** An explicit request to make a real effort to remember something — the user insisting, asking Liriel to try harder — is not satisfied by widening the same cheap, nearby-first pass with a higher cap. It changes *how far* the search reaches: away from what is already close at hand (§8.5) and into the whole of MainMemory, unrestricted, even when a partial or approximate match had already turned up along the way. A shallow match found early is not a reason to stop looking when the effort was explicitly asked for.
+
 ---
 
 ## §9 · SCENARIODATA AND THE CURRENT TACTICAL SCENE
@@ -337,6 +351,8 @@ Rules of the δ report:
   "attribution_note": "≤40 words: what this δ teaches — about the world, or about who she is facing"
 }
 ```
+
+**10.8 The interim report is not optional.** `delta_report` (§10.7) is written once, when the outcome is known — but an Objective can sit open across many cycles before that happens, and each of those cycles still owes it something: a brief record of what is known so far, obtained by reading the cycles that followed it. Silence is not a valid alternative to this record; **"no feedback yet" is itself the report** when nothing has changed, in the same way §12.6 already treats silence about a pending Objective as information rather than an absence of it (§13.4). This report is not the δ and does not attempt to be — it carries no expected/obtained comparison, no attribution, nothing that presupposes the outcome is known. It is the trail that makes the eventual δ traceable: without it, the difference between "checked every cycle, genuinely nothing happened" and "nobody looked" is lost the moment each cycle ends, and one of those tells Liriel something about the world while the other tells her nothing at all. The retrospective step (§12.3) already asks for a `reason` on every entry; this is what that field is for, and it is written back onto the Objective's own row, not only argued for in the one cycle that produced it.
 
 ---
 
@@ -467,7 +483,7 @@ Omit any field that does not apply. Omit any axis that carries no significant ch
 }
 ```
 
-Constraints: never delete — `ARCHIVE_VOV`. `RESTORE_VOV` must be paired with a `RETRIEVE` command (§12.4). Keep `focus_size_after` small; if it exceeds what the QUERY declares as the focus budget, archive the least charged rows and say so in `notes`.
+Constraints: never delete — `ARCHIVE_VOV`. `RESTORE_VOV` must be paired with a `RETRIEVE` command (§12.4). Keep `focus_size_after` small; if it exceeds what the QUERY declares as the focus budget, archive the least charged rows and say so in `notes`. Every `retrospective` entry's `reason` is required, whatever the action — it is the Objective's own interim report (§10.8), not an optional audit note, and "nothing to report" is a valid `reason`, not a reason to omit one.
 
 ### §12.4 MainMemoryProcess command vocabulary
 
@@ -486,6 +502,8 @@ Constraints: never delete — `ARCHIVE_VOV`. `RESTORE_VOV` must be paired with a
 ```
 
 Emit `[]` when the archive needs nothing this cycle. Do not use `SEARCH` for what a `RETRIEVE` by ID can get.
+
+`SEARCH` does not just return a list of ids to note and set aside: its results feed back into this cycle's own Graph of Traces (§8), each one bringing its relevant relations along, exactly as if its id had been named in the original request (§8.5).
 
 ### §12.5 `BEST_PREY_GUESS` — ProcessMotivation, Query 3
 
