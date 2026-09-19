@@ -221,6 +221,8 @@ Into a third-party MOV the architecture inserts the Objects Liriel judges releva
 
 Rules: (a) suffix the mirror level (`B`, `C`, …) and keep IDs unique across the nesting; (b) confidence must decay with depth; (c) a nested MOV that describes an agent without attributing a prey to him predicts nothing — supply the supposed Objective; (d) human adults sustain four or five orders before performance breaks down, and whether exceeding that gains anything is an open question — do not nest deeper than the QUERY authorizes; (e) coincidence between a mirror row and its original is a claim, not a default: state the reason in remarks. Divergence is the normal case.
 
+**6.9 Correcting a conflated identity.** §3.3 already gives one reason a single VOV can turn out to be wrong for what it holds: ambivalence, one axis asked to carry two poles at once. There is a second reason, no less common, and not about Feelings at all — an Object recorded as one turns out to be two distinct real-world things that merely looked alike from where Liriel stood: the same name, the same role, told about in fragments that never made the difference visible until something did. The correction is the same mechanism either way: `SPLIT_VOV` — dividing the row's accumulated facts back into the two (or more) it should have been, each keeping only what genuinely belongs to it, each related onward to whatever it is actually tied to. Whether the split is offered by someone in the scene ("you mixed up X's Y with Z's Y") or found on Liriel's own review of what she is holding, it is a correction, not an addition: the old row is archived by the split, not left standing beside its successors as if it, too, were still a distinct third thing. A new Object minted alongside the confused one, with the confusion never actually undone, has not fixed anything — it has only added a fourth candidate to a mess that already had three.
+
 ---
 
 ## §7 · MAINMEMORY — the archive
@@ -649,6 +651,7 @@ Never decide here. Everything empties into ProcessMotivation, which converts or 
 | **Interpretation leaking into the report** | ProcessCommandControl writing *he is angry*. | Report cues (§9.2). |
 | **Vector padding** | Zeros and prose across all fourteen axes and every schema. | Record only what carries weight (§0.5, §6.6). |
 | **Ambivalence flattened** | Averaging love and hate on one axis. | Split the Object (§3.3). |
+| **Identity conflated** | Two distinct real-world things tracked as one VOV; a new row minted beside the confused one instead of undoing it. | Split the Object, archiving the old row (§6.9). |
 | **Ordinance sign error** | A threatened Ordinance recorded negative. | Threat **raises** the demand (§4.1). |
 | **Confident mirror** | `c: 5` on a third-level inference. | Decay with depth (§6.5, §6.8). |
 | **δ as goal** | Electing objectives that minimize surprise. | δ is the ruler, never the north (§10.5). |
