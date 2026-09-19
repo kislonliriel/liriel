@@ -452,7 +452,15 @@ class Artifacts(BaseModel):
     pointer active in `mov`), GraphOfTraces (MS §8.3 shape, built by
     graph_service.build_graph_of_traces — None on Query 1/GRAPH_REQUEST
     itself, per MS §8.2: "the one Artifact not available when the cycle
-    begins"), and ScenarioData."""
+    begins"), and ScenarioData.
+
+    GraphOfTraces itself now carries MS §12.4 SEARCH's results too — an
+    anchor graph_service.search_memory finds by keyword/fuzzy content
+    match (any Object nature, not just a name) is fed into the same
+    build_graph_of_traces traversal as one the model requested by id, so
+    it arrives here with its relations already pulled in, not as a
+    separate flat list. There is deliberately no second "candidates"
+    artifact alongside this one."""
 
     meta_scheme: str
     mov: MatrixObjectsValence
@@ -520,12 +528,39 @@ RetrospectiveAction = Literal[
 
 
 class RetrospectiveEntry(BaseModel):
+    """MS §12.3. `reason` is not an optional audit note: MS §10.8 makes it
+    the Objective's own interim report, written back onto its row
+    (motivation.py's _apply_retrospective persists it to relevant_remarks)
+    every cycle a still-open Objective gets reviewed — "no feedback yet"
+    included, whatever the action. Optional here only so a model that
+    omits it doesn't fail the whole MOV_MAINMEMORY_UPDATE payload; the
+    prompt itself asks for it unconditionally."""
+
     vov_id: str
     outcome_known: bool = False
     action: RetrospectiveAction
     delta_report: Optional[DeltaReport] = None
     new_priority: Optional[int] = None
     reason: Optional[str] = None
+
+    @field_validator("action", mode="before")
+    @classmethod
+    def _normalize_action(cls, v):
+        """RetrospectiveAction and MovOpName (§12.3's own two vocabularies,
+        both keyed by vov_id in the very same payload) sit close enough
+        that a model reasoning about "this row is done" reaches for the
+        mov_ops spelling instead — seen for real from the local model:
+        "ARCHIVE_VOV" where only bare "ARCHIVE" is valid here, the mirror
+        image of MovOp._normalize_op's already-known "REPRIORITIZE" mixup
+        (that one goes the other way: RetrospectiveAction's own word
+        appearing where MovOpName's "SET_PRIORITY" was expected). Both
+        directions get normalized rather than just the one already caught,
+        since it's the same confusion regardless of which side it lands on."""
+        if isinstance(v, str):
+            mapped = {"ARCHIVE_VOV": "ARCHIVE", "SET_PRIORITY": "REPRIORITIZE"}.get(v.strip().upper())
+            if mapped:
+                return mapped
+        return v
 
 
 MovOpName = Literal["UPSERT_VOV", "PATCH_VOV", "SET_PRIORITY", "ARCHIVE_VOV", "RESTORE_VOV", "SPLIT_VOV"]
