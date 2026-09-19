@@ -124,7 +124,14 @@ class Database(ABC):
     def get_recent_decision_results(self, mov_id: str, limit: int = 200) -> List[dict]:
         """Query 3's (BEST_PREY_GUESS, MS §12.5) full output for the last
         `limit` cycles of this mov, most recent first, skipping cycles that
-        never reached Query 3 (a crash earlier in the cycle, MS §11.1). The
+        never reached Query 3 (a crash earlier in the cycle, MS §11.1). Each
+        entry is `{**decision_result, "response_text": ...}` — the actual
+        chat reply that cycle sent (Phase 1's ProcessCommandControl
+        stand-in, MS §11), alongside the decision that supposedly drove it.
+        Kept together so a human (or a future audit process) can check the
+        reply against the handoff it claims to carry out, rather than
+        trusting that it did — this is the whole point of MS §11.2's rule of
+        ownership being checkable, not just asserted. The
         Best-Prey Guess VOV persisted in mov_objects carries only its own
         `brief_description` (MS §6.4, ≤25 words) — the handoff to
         ProcessCommandControl (why_now, constraints, success/failure
@@ -519,11 +526,11 @@ class PostgresDatabase(Database):
     def get_recent_decision_results(self, mov_id: str, limit: int = 200) -> List[dict]:
         with self._conn.cursor() as cur:
             cur.execute(
-                "select decision_result from motivation_cycles where mov_id = %s "
+                "select decision_result, response_text from motivation_cycles where mov_id = %s "
                 "and decision_result is not null order by created_at desc limit %s",
                 (mov_id, limit),
             )
-            return [row[0] for row in cur.fetchall()]
+            return [{**row[0], "response_text": row[1]} for row in cur.fetchall()]
 
     def close(self) -> None:
         self._conn.close()
@@ -702,7 +709,7 @@ class JsonFileDatabase(Database):
                 continue
             entry = json.loads(line)
             if entry.get("mov_id") == mov_id and entry.get("decision_result"):
-                results.append(entry["decision_result"])
+                results.append({**entry["decision_result"], "response_text": entry.get("response_text")})
             if len(results) >= limit:
                 break
         return results
