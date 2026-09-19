@@ -38,7 +38,7 @@ equivalent split — one local server serves all four.
 """
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import ValidationError
 
@@ -284,9 +284,10 @@ def run_motivation_cycle(
 
     # MS §14.6: exactly one Objective at priority 1, priorities unique and
     # contiguous — enforce it rather than trust a small local model's count.
+    cycle_touched_ids = _cycle_touched_ids(update_result, id_remap)
     guess = decision_result.best_prey_guess.model_copy(
         update={
-            "vov_id": _resolve_id(db, decision_result.best_prey_guess.vov_id),
+            "vov_id": _resolve_id(db, decision_result.best_prey_guess.vov_id, cycle_touched_ids),
             "priority": 1, "valence_regime": "Delta", "object_nature": "Objective",
         }
     )
@@ -296,7 +297,7 @@ def run_motivation_cycle(
     for i, obj in enumerate(decision_result.accompanying_objectives):
         obj = obj.model_copy(
             update={
-                "vov_id": _resolve_id(db, obj.vov_id),
+                "vov_id": _resolve_id(db, obj.vov_id, cycle_touched_ids),
                 "priority": i + 2, "valence_regime": "Delta", "object_nature": "Objective",
             }
         )
@@ -383,6 +384,17 @@ def _apply_retrospective(db: Database, update_result: MovMainMemoryUpdateResult)
             db.archive_object(entry.vov_id)
 
 
+def _normalize_desc(text: Optional[str]) -> str:
+    """Cheap, exact-after-normalization key for spotting a duplicate
+    freshly-minted row within the SAME mov_ops batch (see _apply_mov_ops) —
+    deliberately not the fuzzy matching graph_service.py uses for
+    cross-cycle recall (that's a judgment call the model makes by reading
+    GraphOfTraces; this is a much narrower, purely mechanical safety net
+    against the model repeating the identical description verbatim,
+    several times, within its own single response)."""
+    return " ".join((text or "").strip().lower().split())
+
+
 def _apply_mov_ops(db: Database, mov_id: str, ops: list) -> dict:
     """Applies MS §12.3 mov_ops; returns `id_remap` — {model-guessed vov_id:
     real persisted vov_id} for every row this call minted (UPSERT_VOV/
@@ -400,13 +412,61 @@ def _apply_mov_ops(db: Database, mov_id: str, ops: list) -> dict:
     correct (it can't know what's actually next, and trusting it risks a
     collision) — the gap was never propagating the swap to the rest of
     this cycle's own output, which is very much still expected to be
-    internally consistent."""
+    internally consistent.
+
+    Also guards against a second, related failure also confirmed for
+    real: the same repetition tendency behind the reasoning-loop and
+    truncated-JSON crashes (llamacpp_client.py) showing up INSIDE an
+    otherwise well-formed response — four back-to-back UPSERT_VOV entries
+    for "Gabriela, daughter of Michel and Thaíse.", word-for-word
+    identical, each minting its own new row. GraphOfTraces can only steer
+    the model away from a duplicate that already existed BEFORE this
+    call; it has no way to stop the model from repeating itself within
+    the one response it's currently writing. See `minted_this_batch`
+    below: an UPSERT_VOV about to mint a genuinely new row is folded into
+    an earlier one from the SAME batch instead, when the two are the same
+    object_nature and the same brief_description after whitespace/case
+    normalization — an exact-repeat check, not the fuzzy cross-cycle
+    matching GraphOfTraces already gives the model to reason over."""
+    minted_this_batch: Dict[tuple, str] = {}
     id_remap: dict = {}
     for op in ops:
         op: MovOp
         if op.op == "UPSERT_VOV" and op.vov is not None:
             model_id = op.vov.get("vov_id")
             existing = db.get_object(model_id) if model_id else None
+            if existing is not None and _nature_conflicts(existing, op.vov.get("object_nature")):
+                # Same collision _upsert_nested_row already guards against,
+                # just never checked here: an id the model invented for a
+                # genuinely new row can coincide with an id some OTHER call
+                # in this same cycle also invented for something completely
+                # different — confirmed for real, Query 2 UPSERT_VOV'd a new
+                # Person (Michele) under a self-guessed id that happened to
+                # already be a standing Objective; existing-is-not-None made
+                # this look like an intentional patch, so Michele's fields
+                # merged onto that Objective's row instead of becoming her
+                # own. Treat a nature mismatch as proof it's not the same
+                # row, same as the nested-row path already does.
+                print(f"[warning] UPSERT_VOV vov_id={model_id!r} collides with an existing "
+                      f"{existing.object_nature!r} row but this one is "
+                      f"{op.vov.get('object_nature')!r} — treating as a different entity, "
+                      f"minting a new id instead of merging")
+                existing = None
+            dedup_key = (op.vov.get("object_nature"), _normalize_desc(op.vov.get("brief_description")))
+            if existing is None and dedup_key[1]:
+                dup_id = minted_this_batch.get(dedup_key)
+                if dup_id is not None:
+                    # The exact-repeat case _apply_mov_ops's own docstring
+                    # describes: a genuinely new row about to be minted
+                    # matches, object_nature and brief_description both,
+                    # one already minted earlier in this SAME batch — fold
+                    # into that one instead of creating a sibling duplicate.
+                    print(f"[warning] UPSERT_VOV vov_id={model_id!r} repeats an object this "
+                          f"same batch already created ({dup_id!r}, {dedup_key[1]!r}) — "
+                          f"folding into it instead of minting a duplicate")
+                    existing = db.get_object(dup_id)
+                    if model_id:
+                        id_remap[model_id] = dup_id
             vov = _coerce_vov(existing, op.vov)
             if vov is None:
                 print(f"[warning] UPSERT_VOV missing required fields and no existing "
@@ -417,6 +477,21 @@ def _apply_mov_ops(db: Database, mov_id: str, ops: list) -> dict:
                 if model_id and model_id != real_id:
                     id_remap[model_id] = real_id
                 vov = vov.model_copy(update={"vov_id": real_id})
+                if dedup_key[1]:
+                    minted_this_batch[dedup_key] = real_id
+            elif vov.vov_id != existing.vov_id:
+                # _coerce_vov merges op.vov (which still carries the
+                # model's OWN guessed vov_id, e.g. from the dedup case
+                # above where `existing` was fetched by a DIFFERENT id
+                # than op.vov["vov_id"]) onto `existing` via a plain dict
+                # update — nothing stopped that merge from quietly
+                # "renaming" the real row to the model's guess. Confirmed
+                # for real: this silently defeated the dedup fold above,
+                # inserting a fresh row under the guessed id instead of
+                # updating the one it was supposed to fold into. Once a
+                # merge target is chosen, its real id is the only id that
+                # write may ever land under.
+                vov = vov.model_copy(update={"vov_id": existing.vov_id})
             _upsert_and_link(db, mov_id, vov)
         elif op.op == "PATCH_VOV" and op.vov_id and op.patch:
             existing = db.get_object(op.vov_id)
@@ -706,15 +781,78 @@ def _upsert_and_link(db: Database, mov_id: str, vov: VectorObjectValence) -> Non
     _ensure_relation_edges(db, vov)
 
 
-def _resolve_id(db: Database, proposed_id: str) -> str:
+def _nature_conflicts(existing: VectorObjectValence, expected_nature: Optional[str]) -> bool:
+    """An id collision is only a legitimate patch/re-election when the row
+    already there is plausibly the same kind of thing being written — the
+    model has no visibility into ids another call in this same cycle
+    already claimed for something else, so a shared id can be pure
+    coincidence between two independently-invented guesses. Shared by
+    _apply_mov_ops and _resolve_id; _upsert_nested_row has its own
+    version of this same check (plus a cross-mov_id signal that doesn't
+    apply to top-level ids)."""
+    return bool(expected_nature) and existing.object_nature != expected_nature
+
+
+def _cycle_touched_ids(update_result: MovMainMemoryUpdateResult, id_remap: dict) -> set:
+    """Every vov_id ProcessMotivation consciously decided something about
+    THIS cycle: reviewed in the retrospective (whatever the action —
+    KEEP_PENDING counts exactly as much as ARCHIVE, both are a real
+    decision), or targeted/minted by one of this cycle's own prospective
+    mov_ops. `_resolve_id` uses this as the only legitimate basis for
+    Query 3 re-electing an id that already belongs to a standing
+    Objective — an id existing at all is not enough on its own, or Query 3
+    could silently re-use *any* old Objective's row for a brand-new,
+    unrelated guess just because the model happened to invent the same
+    number. Confirmed for real: an "Objective" about Michele sat at
+    VOV_0005 for six straight cycles, correctly re-elected each time as
+    the same continuing hunt — Query 2's own retrospective reviewed it
+    every one of those cycles — and then, on a seventh cycle whose
+    retrospective never mentioned VOV_0005 at all, Query 3 guessed that
+    same id for an entirely different, unrelated Objective ("identify the
+    specific daughter..."), and _resolve_id let it through because an
+    Objective already sat there. The Michele objective wasn't archived,
+    wasn't given a delta_report, wasn't reprioritized down — it was simply
+    gone, overwritten, with no record of what became of it. An Objective
+    can be *edited* — refined, re-elected, carried forward — but not
+    silently erased by a completely different one that happens to share
+    its number; MS §10.5's δ can only ever be reckoned for an Objective
+    whose end was actually recorded through the retrospective, never one
+    that just vanished under new content."""
+    touched = {entry.vov_id for entry in update_result.retrospective}
+    for op in update_result.prospective.mov_ops:
+        if op.op == "UPSERT_VOV" and op.vov is not None:
+            model_id = op.vov.get("vov_id")
+            if model_id:
+                touched.add(id_remap.get(model_id, model_id))
+        elif op.vov_id:
+            touched.add(op.vov_id)
+    return touched
+
+
+def _resolve_id(db: Database, proposed_id: str, cycle_touched_ids: set) -> str:
     """The model's best_prey_guess/accompanying_objectives usually re-elect
-    an Objective Query 2 already created in this same cycle (by echoing its
-    id back from the MOV it was handed) — that's a legitimate reuse, so
-    keep it. If the id doesn't match anything in the database, though,
-    trusting it verbatim risks a collision (or a silent typo the model
-    made copying an id) exactly like the ones _apply_mov_ops guards
-    against; assign a fresh one instead."""
-    if db.get_object(proposed_id) is not None:
+    an Objective Query 2 already created or reviewed in this same cycle
+    (by echoing its id back from the MOV it was handed) — that's a
+    legitimate reuse, so keep it, but only when BOTH: the row already
+    there actually is an Objective (this id is always about to become
+    one, run_motivation_cycle force-sets object_nature="Objective" right
+    after this returns, so reusing an id that currently names something
+    else is never re-election, it's a collision — confirmed for real
+    against a Person, see _nature_conflicts), AND this exact cycle
+    actually did something with that id (see _cycle_touched_ids) — an id
+    merely existing, untouched by anything THIS cycle decided, is no more
+    evidence of intentional re-election than a Person's id would be;
+    confirmed for real, a six-cycle-standing Objective got silently
+    overwritten by an unrelated new one that happened to guess its number
+    on a cycle that never reviewed it at all. If either check fails,
+    trusting the id verbatim risks a collision (or a silent typo the
+    model made copying an id); assign a fresh one instead."""
+    existing = db.get_object(proposed_id)
+    if (
+        existing is not None
+        and not _nature_conflicts(existing, "Objective")
+        and proposed_id in cycle_touched_ids
+    ):
         return proposed_id
     return db.next_vov_id()
 
