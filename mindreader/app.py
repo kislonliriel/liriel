@@ -91,7 +91,38 @@ def _dominant_valence(feelings: dict) -> Optional[tuple]:
     return axis, av.v
 
 
-def _node_from_vov(vov) -> dict:
+def _latest_bpg_info(db, mov_id: str, objective_vov_ids: list) -> dict:
+    """For each Objective vov_id, the most recent cycle (if any) where it
+    was actually elected as Query 3's best_prey_guess (MS §12.5) — its
+    handoff to ProcessCommandControl, current_tactical_scene and notes.
+    None of this lives on the VOV row itself: mov_objects only ever keeps
+    the row's own brief_description (MS §6.4, ≤25 words), never the
+    handoff MS §11.2 calls ProcessCommandControl's "point of departure" —
+    that only ever existed once, in that cycle's own Query 3 output. An
+    Objective still open but no longer priority 1 shows its most recent
+    handoff from whenever it last WAS elected, which is still useful
+    context even though a fresher one hasn't been written since."""
+    remaining = set(objective_vov_ids)
+    info: dict = {}
+    if not remaining:
+        return info
+    for decision in db.get_recent_decision_results(mov_id):
+        if not remaining:
+            break
+        bpg = (decision or {}).get("best_prey_guess") or {}
+        vid = bpg.get("vov_id")
+        if vid in remaining:
+            info[vid] = {
+                "cycle_id": decision.get("cycle_id"),
+                "handoff_to_processcommandcontrol": decision.get("handoff_to_processcommandcontrol"),
+                "current_tactical_scene": decision.get("current_tactical_scene"),
+                "notes": decision.get("notes"),
+            }
+            remaining.discard(vid)
+    return info
+
+
+def _node_from_vov(vov, bpg_info: Optional[dict] = None) -> dict:
     is_objective = vov.object_nature == "Objective"
     color = _OBJECTIVE_COLOR if is_objective else _NATURE_COLORS.get(vov.object_nature, _DEFAULT_COLOR)
 
@@ -175,6 +206,10 @@ def _node_from_vov(vov) -> dict:
             "feelings": feelings,
             "ordinances": ordinances,
             "objective": vov.objective.model_dump() if vov.objective else None,
+            # MS §11.2's "point of departure" for ProcessCommandControl —
+            # not part of the VOV row (see _latest_bpg_info); None when
+            # this Objective has never been elected best_prey_guess yet.
+            "last_elected_as_bpg": bpg_info,
         },
     }
 
@@ -199,7 +234,9 @@ def _edge_from_relation(rel: dict) -> dict:
         )
     if rel.get("confidence"):
         tooltip_lines.append(f"confiança: {rel['confidence']}/5")
-    return {
+    if rel.get("since_text"):
+        tooltip_lines.append(f"desde: {rel['since_text']}")
+    edge = {
         "id": f"rel-{rel['id']}",
         "from": rel["from_vov_id"],
         "to": rel["to_vov_id"],
@@ -210,6 +247,17 @@ def _edge_from_relation(rel: dict) -> dict:
         "font": {"color": "#9aa5b1", "size": 10, "strokeWidth": 0},
         "smooth": {"type": "curvedCW", "roundness": 0.15},
     }
+    # MS §8.1: a relation's own `directed` flag is real data (WRITE_RELATION
+    # sets it explicitly), not decoration — index.html's global edge config
+    # defaults every edge to no arrowhead (most bonds in practice are mutual:
+    # marriage, friendship), but a per-edge "arrows" property overrides that
+    # default, so a directed relation still reads as directed once one
+    # actually gets written (none has yet — confirmed against live data —
+    # but silently dropping the flag here would misrepresent one the moment
+    # it did).
+    if rel.get("directed"):
+        edge["arrows"] = {"to": {"enabled": True}}
+    return edge
 
 
 def _fallback_edge(from_id: str, to_id: str) -> dict:
@@ -247,10 +295,12 @@ def api_mov():
         mov = db.load_mov(mov_id)
         vov_ids = [o.vov_id for o in mov.active()]
         relations = db.get_relations(vov_ids) if vov_ids else []
+        objective_ids = [o.vov_id for o in mov.active() if o.object_nature == "Objective"]
+        bpg_info = _latest_bpg_info(db, mov_id, objective_ids)
     finally:
         db.close()
 
-    nodes = [_node_from_vov(o) for o in mov.active()]
+    nodes = [_node_from_vov(o, bpg_info.get(o.vov_id)) for o in mov.active()]
     node_ids = {n["id"] for n in nodes}
 
     edges = []
