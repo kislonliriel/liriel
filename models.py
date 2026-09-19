@@ -24,7 +24,7 @@ Everything else here mirrors the MetaScheme's field-by-field specification
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Dict, List, Literal, Optional, Union
+from typing import Dict, List, Literal, Optional, Union, get_args
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -366,6 +366,39 @@ class VectorObjectValence(BaseModel):
             return None
         return v
 
+    @field_validator("object_type", mode="before")
+    @classmethod
+    def _normalize_object_type(cls, v):
+        """`object_type` (MS §6.4: real/imagined/hypothetical, the Object's
+        ontological standing) sits right next to `object_nature` (MS §6.4:
+        PCI/Person/Objective/.../Self-Process) in the same JSON row, and a
+        model sometimes writes one field's vocabulary into the other —
+        confirmed for real, `"object_type": "Objective"` (object_nature's
+        own word, not this field's). Not a strict Literal here on purpose
+        (MovOpName/RetrospectiveAction drive branching and stay strict for
+        that reason; this one doesn't) — but mov_objects' own check
+        constraint enforces the three-value enum regardless, so a value
+        this field doesn't recognize crashed anyway, just later (at the
+        database write) and far more crypticly than at validation. Falls
+        back to the field's own default ("real") for anything
+        unrecognized, the same as leaving it unset already would."""
+        if isinstance(v, str):
+            lowered = v.strip().lower()
+            return lowered if lowered in {"real", "imagined", "hypothetical"} else "real"
+        return v
+
+    @field_validator("valence_regime", mode="before")
+    @classmethod
+    def _normalize_valence_regime(cls, v):
+        """Same confusable-adjacent-vocabulary risk as object_type above,
+        against mov_objects' own `valence_regime in ('State', 'Delta')`
+        check constraint — falls back to the field's own default
+        ("State", the overwhelmingly common regime; "Delta" only applies
+        to Objective rows, MS §6.7) for anything unrecognized."""
+        if isinstance(v, str):
+            return v if v in ("State", "Delta") else "State"
+        return v
+
     @field_validator("perceived_age", "male_female", mode="before")
     @classmethod
     def _stringify_bare_number(cls, v):
@@ -656,9 +689,55 @@ class NestedMovOp(BaseModel):
         return data
 
 
+_MOV_OP_NAMES = set(get_args(MovOpName))
+_NESTED_MOV_OP_NAMES = set(get_args(NestedMovOpName))
+
+
 class Prospective(BaseModel):
     mov_ops: List[MovOp] = Field(default_factory=list)
     nested_mov_ops: List[NestedMovOp] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _sort_ops_by_vocabulary(cls, data):
+        """MS §12.3's `prospective` block puts two distinct op vocabularies
+        side by side in the same JSON object: mov_ops (MovOpName) and
+        nested_mov_ops (NestedMovOpName) — plus a third, RetrospectiveAction,
+        elsewhere in the same query. This project has already hardcoded two
+        one-off fixes for the model reaching for the wrong WORD within the
+        right array (MovOp._normalize_op: "REPRIORITIZE" where
+        "SET_PRIORITY" was meant; RetrospectiveEntry._normalize_action:
+        "ARCHIVE_VOV" where "ARCHIVE" was meant). This is the same family
+        of confusion but one level up: confirmed for real, a whole
+        CREATE_NESTED_MOV item — not just a mislabeled word — placed
+        inside `mov_ops` instead of `nested_mov_ops`, which MovOp's own
+        strict Literal correctly rejects (it doesn't even recognize
+        "CREATE_NESTED_MOV" as one of its six names) but fails the WHOLE
+        MOV_MAINMEMORY_UPDATE payload over one item that plainly belongs
+        one array over.
+
+        Rather than hardcode a remap for this one newly-observed pair (the
+        two vocabularies have nine names between them, so there are many
+        more possible pairings than anyone has actually seen yet), sort
+        every item in EITHER list by which vocabulary its own `op` value
+        actually names, before either list is validated against its own
+        strict Literal. An op name is unambiguous about which kind of
+        operation it is regardless of which array the model put it in —
+        this closes every current and future instance of this same
+        confusion in one general pass, not just the one seen so far."""
+        if not isinstance(data, dict):
+            return data
+        mov_ops, nested_ops = data.get("mov_ops"), data.get("nested_mov_ops")
+        if not isinstance(mov_ops, list) and not isinstance(nested_ops, list):
+            return data
+        sorted_mov, sorted_nested = [], []
+        for item in (mov_ops or []):
+            op = item.get("op") if isinstance(item, dict) else None
+            (sorted_nested if op in _NESTED_MOV_OP_NAMES else sorted_mov).append(item)
+        for item in (nested_ops or []):
+            op = item.get("op") if isinstance(item, dict) else None
+            (sorted_mov if op in _MOV_OP_NAMES else sorted_nested).append(item)
+        return {**data, "mov_ops": sorted_mov, "nested_mov_ops": sorted_nested}
 
 
 class MovMainMemoryUpdateResult(BaseModel):
