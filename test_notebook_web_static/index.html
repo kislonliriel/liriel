@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TestsNotebookApp</title>
+<style>
+  :root {
+    --bg: #14161c;
+    --panel: #1c1f28;
+    --panel-border: #2c303c;
+    --text: #d8dee8;
+    --text-dim: #8b93a3;
+    --accent: #f5c518;
+    --green: #4caf7d;
+    --red: #e05252;
+    --blue: #5aa9e6;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; min-height: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: "Segoe UI", system-ui, sans-serif;
+  }
+  #topbar {
+    position: sticky; top: 0; height: 56px;
+    background: var(--panel); border-bottom: 1px solid var(--panel-border);
+    display: flex; align-items: center; padding: 0 18px; gap: 14px;
+    z-index: 10;
+  }
+  #topbar h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  #topbar .mov-id { font-size: 12px; color: var(--text-dim); }
+  #topbar .spacer { flex: 1; }
+  button {
+    background: var(--accent); color: #2a2000; border: none;
+    padding: 8px 16px; border-radius: 6px; font-weight: 600; cursor: pointer;
+    font-size: 13px;
+  }
+  button:hover { filter: brightness(1.08); }
+  button:disabled { opacity: .4; cursor: default; filter: none; }
+  button.secondary { background: transparent; color: var(--text); border: 1px solid var(--panel-border); }
+  button.danger { background: var(--red); color: #2a0a0a; }
+
+  #layout {
+    display: flex; gap: 18px; padding: 18px; max-width: 1100px; margin: 0 auto;
+    flex-wrap: wrap;
+  }
+  #left { flex: 1 1 420px; min-width: 340px; }
+  #right { flex: 1 1 420px; min-width: 340px; }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--panel-border);
+    border-radius: 10px; padding: 16px; margin-bottom: 16px;
+  }
+  .card h2 { margin: 0 0 12px; font-size: 13px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; }
+
+  #controls-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  select {
+    background: #10121a; color: var(--text); border: 1px solid var(--panel-border);
+    border-radius: 6px; padding: 8px 10px; font-size: 13px; flex: 1; min-width: 160px;
+  }
+
+  #progress { font-size: 12px; color: var(--text-dim); margin-top: 10px; }
+
+  #current-step .meta { font-size: 12px; color: var(--text-dim); margin-bottom: 6px; }
+  #current-step .speaker { color: var(--accent); font-weight: 600; }
+  textarea#step-text {
+    width: 100%; min-height: 110px; resize: vertical;
+    background: #10121a; color: var(--text); border: 1px solid var(--panel-border);
+    border-radius: 8px; padding: 10px; font-size: 14px; font-family: inherit; line-height: 1.4;
+  }
+  #step-actions { display: flex; gap: 10px; margin-top: 12px; }
+  #empty-step, #finished-msg {
+    color: var(--text-dim); font-size: 13px; padding: 8px 0; display: none;
+  }
+
+  #log {
+    height: 480px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;
+  }
+  .log-entry {
+    border-radius: 8px; padding: 8px 10px; font-size: 13px; line-height: 1.4;
+    border-left: 3px solid var(--panel-border); white-space: pre-wrap;
+  }
+  .log-entry.info { color: var(--text-dim); font-style: italic; border-left-color: var(--text-dim); }
+  .log-entry.sent { border-left-color: var(--blue); background: rgba(90,169,230,.08); }
+  .log-entry.reply { border-left-color: var(--accent); background: rgba(245,197,24,.08); }
+  .log-entry.reply::before { content: "Liriel: "; font-weight: 600; color: var(--accent); }
+  .log-entry.skip { border-left-color: var(--text-dim); color: var(--text-dim); }
+  .log-entry.error { border-left-color: var(--red); background: rgba(224,82,82,.10); color: #ffb3b3; }
+
+  #toast {
+    position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+    background: var(--panel); border: 1px solid var(--panel-border); color: var(--text);
+    padding: 10px 18px; border-radius: 8px; font-size: 13px; opacity: 0; pointer-events: none;
+    transition: opacity .25s ease; z-index: 20;
+  }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <h1>TestsNotebookApp</h1>
+  <span class="mov-id" id="mov-id">MOV: —</span>
+  <div class="spacer"></div>
+  <button class="secondary" id="btn-mindreader">Abrir MindReader</button>
+  <button class="danger" id="btn-reset">Resetar MOV</button>
+</div>
+
+<div id="layout">
+  <div id="left">
+    <div class="card">
+      <h2>Caso de teste</h2>
+      <div id="controls-row">
+        <select id="case-select"></select>
+        <button id="btn-start">Iniciar</button>
+        <button class="secondary" id="btn-stop" disabled>Parar</button>
+      </div>
+      <div id="progress"></div>
+    </div>
+
+    <div class="card" id="current-step">
+      <h2>Próxima mensagem</h2>
+      <div id="empty-step">Nenhum teste em andamento — escolha um caso e clique em Iniciar.</div>
+      <div id="finished-msg">Todos os passos deste teste foram concluídos.</div>
+      <div id="step-body" style="display:none">
+        <div class="meta"><span class="speaker" id="step-speaker"></span> · <span id="step-case"></span> · passo <span id="step-label"></span></div>
+        <textarea id="step-text"></textarea>
+        <div id="step-actions">
+          <button id="btn-send">Enviar</button>
+          <button class="secondary" id="btn-skip">Pular</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="right">
+    <div class="card">
+      <h2>O que está acontecendo</h2>
+      <div id="log"></div>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let toastTimer = null;
+
+function toast(msg) {
+  const el = $("toast");
+  el.textContent = msg;
+  el.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), 3500);
+}
+
+async function api(path, opts) {
+  const resp = await fetch(path, Object.assign({
+    headers: { "Content-Type": "application/json" }
+  }, opts));
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+  return data;
+}
+
+function renderLog(entries) {
+  const el = $("log");
+  const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 20;
+  el.innerHTML = entries.map(e =>
+    `<div class="log-entry ${e.type}">${escapeHtml(e.text)}</div>`
+  ).join("");
+  if (atBottom) el.scrollTop = el.scrollHeight;
+}
+
+function escapeHtml(s) {
+  const d = document.createElement("div");
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function renderState(state) {
+  $("mov-id").textContent = `MOV: ${state.mov_id}`;
+  $("btn-stop").disabled = !state.running;
+  renderLog(state.log || []);
+
+  if (!state.running) {
+    $("progress").textContent = "";
+    $("empty-step").style.display = "block";
+    $("finished-msg").style.display = "none";
+    $("step-body").style.display = "none";
+    return;
+  }
+
+  $("progress").textContent = `Passo ${Math.min(state.index + 1, state.total)} de ${state.total}`;
+
+  if (state.finished || !state.current) {
+    $("empty-step").style.display = "none";
+    $("finished-msg").style.display = "block";
+    $("step-body").style.display = "none";
+    return;
+  }
+
+  $("empty-step").style.display = "none";
+  $("finished-msg").style.display = "none";
+  $("step-body").style.display = "block";
+  $("step-speaker").textContent = state.current.speaker;
+  $("step-case").textContent = state.current.case_name;
+  $("step-label").textContent = state.current.label;
+  $("step-text").value = state.current.text;
+}
+
+async function refreshState() {
+  const state = await api("/api/state");
+  renderState(state);
+  return state;
+}
+
+async function loadCases() {
+  const cases = await api("/api/cases");
+  const sel = $("case-select");
+  sel.innerHTML = "";
+  const allOpt = document.createElement("option");
+  allOpt.value = "";
+  allOpt.textContent = `Todos os casos (${cases.length})`;
+  sel.appendChild(allOpt);
+  for (const c of cases) {
+    const opt = document.createElement("option");
+    opt.value = c.name;
+    opt.textContent = `${c.name} (${c.steps.length} passo${c.steps.length > 1 ? "s" : ""})`;
+    sel.appendChild(opt);
+  }
+}
+
+$("btn-start").addEventListener("click", async () => {
+  try {
+    const state = await api("/api/start", {
+      method: "POST",
+      body: JSON.stringify({ case: $("case-select").value })
+    });
+    renderState(state);
+  } catch (e) { toast(e.message); }
+});
+
+$("btn-stop").addEventListener("click", async () => {
+  if (!confirm("Interromper o teste agora?")) return;
+  try { renderState(await api("/api/stop", { method: "POST" })); }
+  catch (e) { toast(e.message); }
+});
+
+$("btn-send").addEventListener("click", async () => {
+  const text = $("step-text").value.trim();
+  if (!text) { toast("Texto vazio."); return; }
+  $("btn-send").disabled = true;
+  $("btn-skip").disabled = true;
+  try {
+    const res = await api("/api/send", { method: "POST", body: JSON.stringify({ text }) });
+    renderState(res.state);
+    if (!res.ok) toast("Erro no ciclo — veja o log.");
+  } catch (e) { toast(e.message); }
+  finally {
+    $("btn-send").disabled = false;
+    $("btn-skip").disabled = false;
+  }
+});
+
+$("btn-skip").addEventListener("click", async () => {
+  try { renderState(await api("/api/skip", { method: "POST" })); }
+  catch (e) { toast(e.message); }
+});
+
+$("btn-reset").addEventListener("click", async () => {
+  if (!confirm("Isso vai APAGAR toda a MOV/MainMemory, exceto a identidade principal (Liriel e Fábio). Confirma?")) return;
+  try {
+    const res = await api("/api/reset", { method: "POST", body: JSON.stringify({ confirm: true }) });
+    toast(res.message);
+    renderState(res.state);
+  } catch (e) { toast(e.message); }
+});
+
+$("btn-mindreader").addEventListener("click", async () => {
+  try {
+    const res = await api("/api/open_mindreader", { method: "POST" });
+    toast(res.message);
+  } catch (e) { toast(e.message); }
+});
+
+(async function init() {
+  await loadCases();
+  await refreshState();
+})();
+</script>
+
+</body>
+</html>

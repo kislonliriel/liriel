@@ -1,0 +1,50 @@
+{
+  "_readme": "Casos e passos do TestsNotebookApp (test_notebook_app.py). Edite, adicione ou remova casos/passos livremente -- nao precisa mexer em codigo. Cada passo vira uma mensagem real enviada a Liriel (mesmo pipeline de producao, run_motivation_cycle), na ordem em que aparece aqui. 'speaker' e so' para exibicao no terminal; toda mensagem sai como se fosse do Fabio no Telegram (o unico contato configurado) -- Liriel nunca sabe que e' um teste.",
+  "cases": [
+    {
+      "name": "Lya e Oscar",
+      "steps": [
+        {
+          "label": "1.1",
+          "speaker": "Fabio",
+          "text": "Oi Liriel, é o Fabio. Estou muito preocupado com a Lya, filha do meu irmão Eduardo e sua esposa Lisie estão muito preocupados e tristes. A Lya só tem 14 anos e está apaixonada por um amigo da escola, o Oscar. A Lya só fala do Oscar, não quer estudar e fala que quer casar com ele. O problema é que ela só tem 14 anos de idade. O Oscar tem 15 anos de idade."
+        },
+        {
+          "label": "1.2",
+          "speaker": "Fabio",
+          "text": "Oi Liriel, é o Fabio. A Lisie e o Eduardo estão muito tristes porque a Lya está dizendo que os odeia. Que vai sair de casa. A mãe do Oscar, a Neuza, apoia o namoro e diz que vai dar uma casa para o casal caso eles se casem. Neuza é uma viúva muito rica. A Neuza poe toda a culpa de todos os problemas no Eduardo e na Lisie, diz que eles são preconceituosos. Neuza é uma mulher orgulhosa que se acha acima do bem e do mal."
+        },
+        {
+          "label": "1.3",
+          "speaker": "Fabio",
+          "text": "Oi Liriel, é o Fabio. A Neuza está querendo fazer uma viajem para a Disney e levar o Oscar e a Lya. Meu irmão e sua esposa estão com muita raiva da Neuza porque sabem que ela está usando seu poder financeiro para colocar a Lya contra eles. Meu irmão também brigou comigo pelo celular, ele acha que eu sou um louco. Ele está muito tenso com toda essa situação. Minha esposa Adriana está orando muito, pedindo a Deus que ajude a família do Eduardo nessa crise."
+        },
+        {
+          "label": "1.4",
+          "speaker": "Fabio",
+          "text": "Oi Liriel, é o Fabio. A Neuza tem um motorista, o Jarbas. O Jarbas disse para o Eduardo que sua patroa é uma mulher malandra. Ele disse que ela fica fazendo tudo isso porque é uma revoltada. Ela se diverte em criar confusão."
+        }
+      ]
+    },
+    {
+      "name": "Lucá quer abandonar a escola",
+      "steps": [
+        {
+          "label": "2.1",
+          "speaker": "Fabio",
+          "text": "Oi Liriel, é o Fabio. O Lucá, filho da minha irmã Gisele e do seu marido Roberto, está dizendo que quer abandonar a escola. Ele é um “garanhão” das meninas, sabe? Só quer saber de se divertir. Ele tem um amigo, o Cezar, que parece que é ladrão de carro. Estamos todos muito tristes com isso."
+        }
+      ]
+    },
+    {
+      "name": "Heitor, filho do Milton e Emanuely quer subir o Everest",
+      "steps": [
+        {
+          "label": "3.1",
+          "speaker": "Fabio",
+          "text": "Oi Liriel, é o Fabio. O Heitor, filho do meu irmão Milton e da sua esposa Emanuely está obcecado com a ideia de subir o monte Everest. Ele tem apenas 17 anos de idade! Ela sabe dos riscos mas está muito convicto."
+        }
+      ]
+    }
+  ]
+}
