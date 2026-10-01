@@ -243,7 +243,13 @@ def _edge_dict(row: dict, source_of: Dict[str, str]) -> dict:
         "from": row["from_vov_id"],
         "to": row["to_vov_id"],
         "kind": row["kind"],
-        "directed": row["directed"],
+        # Defensive default, not just reliance on the writer always setting
+        # it (database.py's own JsonFileDatabase.write_relation does, as of
+        # this session's redesign) -- a relation dict reaching here can
+        # originate from more than one backend/layer (DraftDatabase's own
+        # scratch included), and nothing about an edge's directedness is
+        # knowable from its other fields if this one is ever absent.
+        "directed": row.get("directed", False),
         "propositional": row["propositional"],
         # MS §3.5/§8.3: an edge's affective weight is felt the same way a
         # VOV's own Feeling is — always feeling-axis-keyed — so it reaches

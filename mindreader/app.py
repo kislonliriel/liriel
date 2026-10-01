@@ -19,6 +19,7 @@ reload the page) any time to see the MOV as it stands right now.
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Windows console codepage fix, same as main.py/telegram_bot.py.
@@ -32,6 +33,7 @@ from flask import Flask, jsonify, request, send_from_directory  # noqa: E402
 
 from config import settings  # noqa: E402
 from database import get_database  # noqa: E402
+from models import FEELING_AXES, ORDINANCE_KEYS, SCHEMA_KEYS  # noqa: E402
 
 app = Flask(__name__, static_folder="static", static_url_path="")
 
@@ -188,8 +190,35 @@ def _latest_bpg_info(db, mov_id: str, objective_vov_ids: list) -> dict:
     return info
 
 
-def _node_from_vov(vov, bpg_info: Optional[dict] = None, tactical_scene_info: Optional[dict] = None) -> dict:
+def _scenario_data_sequence(db, mov_id: str) -> dict:
+    """{vov_id: 1, 2, 3, ...} for every ScenarioData row this mov has ever
+    held, oldest first -- so you can read off the order a cluster's own
+    matters were actually created in (the user's own request: "numeração
+    nos círculos... para saber em que sequência foram criados").
+
+    MS §6.10: a ScenarioData row is written once and never edited again
+    (_apply_mov_ops in motivation.py refuses PATCH_VOV on one) -- so its
+    own `updated_at`, for this object_nature alone, IS its creation time,
+    reliably, with no separate "created_at" column needed.
+
+    Numbered across the row's ENTIRE history for this mov -- active or
+    archived, not just what's on screen right now: AIRP's MemoryStrength
+    can file an old cluster away, and archiving it must not renumber the
+    ones that remain, or "sequência" would stop meaning creation order the
+    moment anything aged out of focus."""
+    rows = [o for o in db.get_all_objects(mov_id) if o.object_nature == "ScenarioData"]
+    rows.sort(key=lambda o: (o.updated_at or datetime.min.replace(tzinfo=timezone.utc), o.vov_id))
+    return {o.vov_id: i + 1 for i, o in enumerate(rows)}
+
+
+def _node_from_vov(
+    vov,
+    bpg_info: Optional[dict] = None,
+    tactical_scene_info: Optional[dict] = None,
+    scenario_seq: Optional[int] = None,
+) -> dict:
     is_objective = vov.object_nature == "Objective"
+    is_scenario = vov.object_nature == "ScenarioData"
     color = _OBJECTIVE_COLOR if is_objective else _NATURE_COLORS.get(vov.object_nature, _DEFAULT_COLOR)
 
     # "breve explicação textual" visible on the graph itself, not just on
@@ -213,6 +242,13 @@ def _node_from_vov(vov, bpg_info: Optional[dict] = None, tactical_scene_info: Op
     label_desc = _truncate(vov.brief_description, 42)
     if is_objective:
         label = str(vov.priority) if vov.priority is not None else "•"
+    elif is_scenario:
+        # Same idiom as Objective's own priority circle just above (big,
+        # centered number on a "circle" shape) -- here the number is this
+        # row's place in creation order (_scenario_data_sequence), not a
+        # priority. The id/description move to a hover title below, since
+        # the visible label no longer has room for them.
+        label = str(scenario_seq) if scenario_seq is not None else "•"
     else:
         # 🪞 flags a materialized nested MOV (MS §6.8 calls this
         # "specular recursion" -- the mirror is the exact right symbol,
@@ -223,6 +259,7 @@ def _node_from_vov(vov, bpg_info: Optional[dict] = None, tactical_scene_info: Op
 
     feelings = {k: {"v": v.v, "c": v.c} for k, v in vov.feelings.items()}
     ordinances = {k: {"v": v.v, "c": v.c} for k, v in vov.ordinances.items()}
+    schemas = {k: {"v": v.v, "c": v.c} for k, v in vov.schemas.items()}
 
     if is_objective:
         node_color = {"background": color, "border": "#fff2b8"}
@@ -242,9 +279,13 @@ def _node_from_vov(vov, bpg_info: Optional[dict] = None, tactical_scene_info: Op
         else:
             node_color = color  # a plain string = same border as fill -> no visible ring
             border_width = 1
-        node_shape = "dot"
+        # AIRP backbones (MS §6.10) get the same "circle, number inside"
+        # treatment as an Objective's own priority, so the creation
+        # sequence reads directly off the graph; every other nature keeps
+        # "dot" (label below), unchanged.
+        node_shape = "circle" if is_scenario else "dot"
 
-    return {
+    node = {
         "id": vov.vov_id,
         "label": label,
         "group": vov.object_nature,
@@ -255,6 +296,8 @@ def _node_from_vov(vov, bpg_info: Optional[dict] = None, tactical_scene_info: Op
         "font": (
             {"color": "#2a2000", "size": 18, "bold": {"color": "#2a2000"}}
             if is_objective
+            else {"color": "#fff", "size": 14, "bold": {"color": "#fff"}}
+            if is_scenario
             else {"color": "#aab2bf", "size": 10}
         ),
         # Everything the click-through panel needs, sent once, used by JS.
@@ -271,6 +314,8 @@ def _node_from_vov(vov, bpg_info: Optional[dict] = None, tactical_scene_info: Op
             "nested_mov": vov.nested_mov,
             "feelings": feelings,
             "ordinances": ordinances,
+            "schemas": schemas,
+            "scenario_seq": scenario_seq,
             "objective": vov.objective.model_dump() if vov.objective else None,
             # MS §11.2's "point of departure" for ProcessCommandControl —
             # not part of the VOV row (see _latest_bpg_info); None when
@@ -285,6 +330,14 @@ def _node_from_vov(vov, bpg_info: Optional[dict] = None, tactical_scene_info: Op
             "scenario_tactical_scene": tactical_scene_info,
         },
     }
+    if is_scenario:
+        # The visible label is now just the sequence number -- keep the
+        # id/description reachable at a glance (a native hover tooltip)
+        # instead of only after a click, same as it was before the label
+        # changed above.
+        seq_part = f"#{scenario_seq} — " if scenario_seq is not None else ""
+        node["title"] = f"{seq_part}{vov.vov_id}\n{_truncate(vov.brief_description, 160)}"
+    return node
 
 
 # Edge color/width by how strongly-charged the relation is — MS §8.1: an
@@ -372,11 +425,14 @@ def api_mov():
         bpg_info = _latest_bpg_info(db, mov_id, objective_ids)
         scenario_ids = [o.vov_id for o in mov.active() if o.object_nature == "ScenarioData"]
         tactical_scene_info = _latest_tactical_scene_for_scenarios(db, mov_id, scenario_ids)
+        scenario_seq = _scenario_data_sequence(db, mov_id)
     finally:
         db.close()
 
     nodes = [
-        _node_from_vov(o, bpg_info.get(o.vov_id), tactical_scene_info.get(o.vov_id))
+        _node_from_vov(
+            o, bpg_info.get(o.vov_id), tactical_scene_info.get(o.vov_id), scenario_seq.get(o.vov_id)
+        )
         for o in mov.active()
     ]
     node_ids = {n["id"] for n in nodes}
@@ -404,6 +460,22 @@ def api_mov():
         "nodes": nodes,
         "edges": edges,
         "legend": {**{k: v for k, v in _NATURE_COLORS.items()}, "Objective": _OBJECTIVE_COLOR},
+        # The full dimension lists (MS §3/§4/§5) -- every axis a VOV COULD
+        # carry, not just the ones a given row happens to have charged.
+        # Static regardless of mov_id; sent alongside the graph itself
+        # rather than a separate endpoint so the "ver vetor completo"
+        # panel (index.html) never has to make a second round trip.
+        "axis_reference": {
+            "feelings": [
+                {
+                    "key": a.key, "label": a.label,
+                    "positive_pole": a.positive_pole, "negative_pole": a.negative_pole,
+                }
+                for a in FEELING_AXES
+            ],
+            "ordinances": ORDINANCE_KEYS,
+            "schemas": SCHEMA_KEYS,
+        },
     })
 
 

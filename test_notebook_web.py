@@ -106,8 +106,12 @@ def api_start():
 
         if _state["db"] is None:
             _state["db"] = get_database()
-            _state["mov"] = _state["db"].load_mov(settings.default_mov_id)
-            _log("info", f"Conectado à MOV '{settings.default_mov_id}'.")
+        # Always (re)load fresh — not just on first connect: a Resetar MOV
+        # click before Iniciar already set _state["db"], so gating this load
+        # on "db is None" left _state["mov"] stuck at None and crashed the
+        # first /api/send with "'NoneType' object has no attribute 'mov_id'".
+        _state["mov"] = _state["db"].load_mov(settings.default_mov_id)
+        _log("info", f"Conectado à MOV '{settings.default_mov_id}'.")
 
         _state["steps"] = steps
         _state["index"] = 0

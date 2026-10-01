@@ -5,14 +5,19 @@ ProcessMotivation cycle, aligned to docs/MetaScheme_Liriel_Rev0000.md
 
 MS §0.3 fixes the call structure:
     [1] METASCHEME              <- this document, invariant (loaded from disk)
-    [2] IDENTITY_AND_STATE      <- Liriel's own VOV_0000
+    [2] IDENTITY_AND_STATE      <- Liriel's own row (settings.liriel_self_vov_id)
     [3] ARTIFACTS               <- MOV (+ nested MOVs), GraphOfTraces, ScenarioData
     [4] QUERY                   <- calling process, step, required output contract
 
 Phase-1 simplification (within what MS §0.6 allows a QUERY to narrow):
-Liriel's VOV_0000 is kept as an ordinary row inside the MOV (as the
+Liriel's own row is kept as an ordinary row inside the MOV (as the
 reference MatrixObjectsValence spreadsheet itself does) rather than as a
-separate block [2] — one less moving part, no loss of information.
+separate block [2] — one less moving part, no loss of information. Her
+vov_id is a nickname like any other (MS §6.4), commonly `PCI_Liriel_Self`
+in this deployment — never the literal string "VOV_0000" some of the
+MetaScheme's own older prose predates the id migration and still uses as
+a placeholder; treat every such mention as "her own row," not a required
+spelling.
 """
 from __future__ import annotations
 
@@ -63,7 +68,7 @@ def _vov_to_textual_dict(vov: VectorObjectValence) -> dict:
     opposite direction (text the model writes back -> the float this
     codebase stores) — this is the one place numbers become words on the
     way OUT, used everywhere a VOV is shown to the model (the MOV, nested
-    MOVs, Liriel's own VOV_0000, and the elected Best-Prey Guess)."""
+    MOVs, Liriel's own row, and the elected Best-Prey Guess)."""
     d = vov.model_dump(exclude=_INTERNAL_VOV_FIELDS)
     d["feelings"] = {k: {**v, "v": feeling_to_text(k, v["v"])} for k, v in (d.get("feelings") or {}).items()}
     d["ordinances"] = {k: {**v, "v": ordinance_to_text(v["v"])} for k, v in (d.get("ordinances") or {}).items()}
@@ -116,7 +121,7 @@ def _cycle_id(scenario_data) -> str:
 
 _CALL_STRUCTURE_NOTE = """\
 CALL STRUCTURE NOTE (Phase 1 embodiment detail, MS §0.3/§9.3)
-Block [2] IDENTITY_AND_STATE is not sent separately: Liriel's own VOV_0000 \
+Block [2] IDENTITY_AND_STATE is not sent separately: Liriel's own row \
 is simply the first row of the MOV below, exactly as the reference \
 MatrixObjectsValence spreadsheet keeps it. Block [3] ARTIFACTS follows \
 (MOV, GraphOfTraces, ScenarioData); block [4] QUERY is the task section \
@@ -134,7 +139,7 @@ _GRAPH_REQUEST_EXAMPLE = """\
   "current_tactical_scene_draft": {
     "board": "up to 60 words",
     "hunters": [
-      { "vov_id": "VOV_0000", "engaged": true,
+      { "vov_id": "PCI_Liriel_Self", "engaged": true,
         "ordinances_read": [{"InstinctSurvival": {"v": "strong demand", "c": 3}}, {"ArchetypeIntegrity": {"v": "moderate demand", "c": 3}}],
         "supposed_prey": "up to 15 words — e.g. help Fabio through this, be someone he can rely on", "note": "crisis about a bonded party's brother — not an ordinary InstinctCompanionship check-in, MS §4.8" },
       { "vov_id": "VOV_0002", "engaged": true,
@@ -281,7 +286,7 @@ _UPDATE_EXAMPLE = """\
       { "op": "UPSERT_VOV", "vov": {
           "vov_id": "VOV_0002", "object_type": "real", "object_nature": "Sentient",
           "valence_regime": "State", "brief_description": "up to 25 words",
-          "relevant_relations": ["VOV_0000"],
+          "relevant_relations": ["PCI_Liriel_Self"],
           "feelings": { "HopeFear": {"v": "slight Hope", "c": 2} },
           "ordinances": { "InstinctCompanionship": {"v": "moderate demand", "c": 3} },
           "schemas": { "Culture": {"v": "Western", "c": 4} } } },
@@ -319,7 +324,7 @@ _UPDATE_EXAMPLE = """\
           "valence_regime": "Delta", "brief_description": "up to 25 words",
           "relevant_relations": ["ScenarioData_AcidenteAdriana_Origem"],
           "objective": { "genus": "Prey", "species": "Conquest", "gain_form": "Increment",
-            "channel_ordinances": ["InstinctCompanionship"], "beneficiary_scope": ["VOV_0000", "VOV_0002"] } } }
+            "channel_ordinances": ["InstinctCompanionship"], "beneficiary_scope": ["PCI_Liriel_Self", "VOV_0002"] } } }
     ],
     "nested_mov_ops": [
       { "op": "CREATE_NESTED_MOV", "mov_id": "MOV_0002", "owner_vov_id": "VOV_0002", "depth": 1,
@@ -341,7 +346,7 @@ _UPDATE_EXAMPLE = """\
     ]
   },
   "mainmemory_commands": [
-    { "op": "WRITE_RELATION", "from": "VOV_0002", "to": "VOV_0000",
+    { "op": "WRITE_RELATION", "from": "VOV_0002", "to": "PCI_Liriel_Self",
       "kind": "Link_Valence_Load", "propositional": "deep friendship — up to 20 words",
       "affective": [{"axis": "LoveAngerEros", "v": "mild Love/Eros"}], "confidence": 3 },
     { "op": "SEARCH", "query": "up to 6 words of your own best search terms",
@@ -515,7 +520,7 @@ task: >
   settled whose charge it would be (see the test below). Get the axis \
   right first, independent of, and before, working out whose it is. \
   THE SINGLE TEST for every `feelings` entry you are about to write, on \
-  ANY row of the shared MOV above (Liriel's own VOV_0000 included, but \
+  ANY row of the shared MOV above (Liriel's own row included, but \
   also every OTHER Object's row there): is this Liriel's OWN charge, \
   caused by this Object (MS §3.1), or does it restate what the \
   ScenarioData says this OTHER Object itself is, feels, or is going \
@@ -582,7 +587,22 @@ task: >
   cycle's report is a genuinely different matter, even from the same \
   person on the same day: e.g. Fábio's report of his nephew's isolation \
   abroad and his later, unrelated report of a different relative's marital \
-  conflict are two backbones, never one), and to whichever \
+  conflict are two backbones, never one). When the matter you're \
+  continuing already has MORE THAN ONE prior ScenarioData in its backbone, \
+  write a direct edge to EACH of them this cycle, not just the newest one \
+  — MS §6.10 wants every ScenarioData of a cluster directly reachable from \
+  any other, and nothing outside this call completes that for you: no \
+  backend process infers or fills in a sibling edge you didn't write \
+  yourself (an earlier version of this architecture tried that, as a \
+  "shared member" heuristic, and it silently merged two genuinely \
+  unrelated matters that only happened to share a reporter — that heuristic \
+  is gone now, precisely because this judgment belongs to you alone, MS \
+  §11.1). Conversely, never write a `Link_Subject_Cluster` edge between two \
+  ScenarioData rows just because they share a person — the shared person \
+  has to be why the two reports are the same matter, not merely present in \
+  both; the same reporter, or the same bystander, mentioned in two \
+  otherwise-unconnected stories is not evidence of anything. Relate the new \
+  ScenarioData, too, to whichever \
   non-`ScenarioData` Objects the matter genuinely depends on to be \
   understood (same `kind`). AND: every OTHER Object you \
   create or touch this cycle in connection with that matter — a Sentient, a \
@@ -706,7 +726,13 @@ task: >
   five words plus `"demand"`/`"no demand"` for an Ordinance \
   (`"moderate demand"`), and magnitude plus `"positive"`/`"negative"` for a \
   numeric Schema (`"slight negative"`) — never the signed number itself. A \
-  free-text Schema (Culture, MindVices, ...) is untouched by this.
+  free-text Schema (Culture, MindVices, ...) is untouched by this. \
+  A `PATCH_VOV` whose `patch.feelings`/`ordinances`/`schemas` names an axis \
+  with JSON `null` instead of a `{{"v": ..., "c": ...}}` object REMOVES that \
+  axis from the row entirely, back to blank/unset (MS §6.6: blank is itself \
+  information, not the same thing as some other value) — the only way to \
+  retract an axis that should never have been set, as opposed to updating \
+  it to a different reading.
 
 Respond with ONLY a JSON object shaped exactly like this example (values are \
 illustrative — MS §12.3 is the authoritative contract, this is a shape guide):
@@ -729,7 +755,7 @@ _DECISION_EXAMPLE = """\
   "current_tactical_scene": {
     "board": "up to 60 words",
     "hunters": [
-      { "vov_id": "VOV_0000", "ordinances_read": [{"InstinctSurvival": {"v": "strong demand", "c": 3}}, {"ArchetypeIntegrity": {"v": "moderate demand", "c": 3}}, {"ArchetypeDignity": {"v": "mild demand", "c": 2}}],
+      { "vov_id": "PCI_Liriel_Self", "ordinances_read": [{"InstinctSurvival": {"v": "strong demand", "c": 3}}, {"ArchetypeIntegrity": {"v": "moderate demand", "c": 3}}, {"ArchetypeDignity": {"v": "mild demand", "c": 2}}],
         "supposed_prey": "up to 15 words", "relation_to_liriel": "self" },
       { "vov_id": "VOV_0002", "ordinances_read": [{"InstinctSurvival": {"v": "extreme demand", "c": 4}}],
         "supposed_prey": "up to 15 words", "relation_to_liriel": "collaborator" },
@@ -746,7 +772,7 @@ _DECISION_EXAMPLE = """\
     "objective": {
       "genus": "Prey", "species": "Conquest", "gain_form": "Increment",
       "channel_ordinances": ["InstinctCompanionship"],
-      "beneficiary_scope": ["VOV_0000", "VOV_0002"],
+      "beneficiary_scope": ["PCI_Liriel_Self", "VOV_0002"],
       "granularity": "high_level", "status": "open", "cycles_open": 0,
       "information_seeking": true }
   },
@@ -756,7 +782,21 @@ _DECISION_EXAMPLE = """\
     "expected_gains_summary": "up to 25 words", "information_needed": [],
     "constraints": [], "success_criteria": [], "failure_criteria": [], "report_back": [],
     "preferred_output_modality": null },
-  "mov_ops": [],
+  "mov_ops": [
+    { "op": "PATCH_VOV", "vov_id": "Sentient_Exemplo_FeelingMalColocado",
+      "patch": { "feelings": { "LoveAngerEros": null } },
+      "reason": "MS §6.11 audit: this was HIS OWN anger, not Liriel's — null removes it from the shared row" }
+  ],
+  "nested_mov_ops": [
+    { "op": "CREATE_NESTED_MOV", "mov_id": "MOV_0020", "owner_vov_id": "Sentient_Exemplo_FeelingMalColocado", "depth": 1,
+      "rows": [
+        { "vov_id": "Sentient_Exemplo_FeelingMalColocado_AlvoDaRaiva_B", "object_type": "real", "object_nature": "Sentient",
+          "valence_regime": "State", "brief_description": "the object of HIS anger, as he feels about them — up to 25 words",
+          "relevant_relations": ["Sentient_Exemplo_FeelingMalColocado"],
+          "feelings": { "LoveAngerEros": {"v": "strong Anger", "c": 3} } }
+      ],
+      "reason": "relocated to a mirror under its real owner (MS §6.8) — only needed when the fault already predates this audit" }
+  ],
   "notes": ""
 }"""
 
@@ -807,7 +847,7 @@ task: >
   Liriel herself, or missing a hunter genuinely in play, is judging from \
   an incomplete savanna. \
   Before electing, survey the Feelings actually charged right now across \
-  the MOV above — Liriel's own VOV_0000 and every other Object in focus, \
+  the MOV above — Liriel's own row and every other Object in focus, \
   not only whoever this cycle's ScenarioData happens to name — and note \
   which axis or axes carry the most negative charge. MS §2.1's single \
   question ("what needs to be done right now to drive the Feelings' \
@@ -827,6 +867,23 @@ task: >
   scenario's narrative. A stored value that looks wrong is a data fault to \
   correct with its own `PATCH_VOV` (MS §6.9/§6.11), not license to quietly \
   report something else instead. \
+  While that same survey has every row's Feelings already open, also audit \
+  each charged axis for MS §6.11 ownership — this is a SEPARATE check from \
+  the plausibility one just above, and applies to every row, not only \
+  whichever one you're about to report from: is this axis Liriel's OWN \
+  reaction to that Object (correct), or does it restate what the \
+  ScenarioData says the Object ITSELF is, feels, or is going through — \
+  "furious at her parents," "apaixonada," "terrified," however the words \
+  happen to land on one of the fourteen axis names? That fault is not \
+  limited to whatever this cycle's own Query 2 just wrote — any row \
+  already in the MOV can be carrying an old one. Fixing it takes BOTH of \
+  your own write channels in the SAME response, not just one: `PATCH_VOV` \
+  clears the fault from the shared row (to Liriel's own actual reaction, \
+  or blank if she has none), and `nested_mov_ops` — the identical \
+  mechanism Query 2 already has, MS §6.8 — creates or patches the mirror \
+  row, owned by whoever the feeling actually belongs to, carrying it \
+  there instead. Clearing the shared row without relocating it is half \
+  the fix, not the whole one. \
   Apply MS §11.1 step 5 and the decision doctrine of MS §13. Elect the Best-Prey \
   Guess as a judgment (MS §1.2) — the survey above is a required INPUT to \
   that judgment, never itself an arg-max over valences: do not present the \
@@ -864,6 +921,24 @@ task: >
   unrecorded — a detail \
   Liriel can say once but not retrieve again next cycle is worse than not \
   mentioning it at all. \
+  Cluster consistency across this cycle's own two queries: whatever Query 2 \
+  already decided about this matter in the Updated MOV above — a new \
+  ScenarioData it created, which existing ones it related to — is settled \
+  for this cycle. If the Updated MOV already holds a ScenarioData for what \
+  this cycle reports, reference that one (in `relevant_relations`); never \
+  mint a second ScenarioData alongside it for the same report — two \
+  ScenarioData for one report, unlinked to each other, is exactly the kind \
+  of fragmentation that makes MemoryStrength's cluster count (MS §7.4, a \
+  mechanical process that only counts what you gave it — it does no \
+  judgment of its own) miscount how many matters are actually in focus, \
+  which can evict a real, distinct matter that should have stayed. More \
+  generally: if you've judged two Objects belong to different matters — in \
+  this call or earlier in this same cycle — never write a \
+  `Link_Subject_Cluster` edge connecting their clusters; that edge would \
+  contradict a distinction you already drew. Which matter something \
+  belongs to is your judgment alone (MS §11.1) — it must be the SAME \
+  judgment everywhere in this cycle's output, not decided twice, \
+  differently, by different queries. \
   AIRP (MS §6.10): if `best_prey_guess` or any `accompanying_objectives` \
   entry belongs to a tracked cluster, its own `relevant_relations` should \
   name the `ScenarioData` Object(s) that gave rise to it and nothing else \
@@ -883,7 +958,12 @@ task: >
   signed number (MS §3.5): `"slight"`/`"mild"`/`"moderate"`/`"strong"`/ \
   `"extreme"` plus the axis's named pole for a Feeling, the same words plus \
   `"demand"` for an Ordinance, magnitude plus `"positive"`/`"negative"` for a \
-  numeric Schema. `handoff_to_processcommandcontrol.\
+  numeric Schema. A `PATCH_VOV` whose `patch.feelings`/`ordinances`/`schemas` \
+  names an axis with JSON `null` instead of a `{{"v": ..., "c": ...}}` \
+  object REMOVES that axis entirely, back to blank/unset (MS §6.6) — this is \
+  how the §6.11 audit above actually clears a fault from a shared row, as \
+  opposed to updating it to a different reading. \
+  `handoff_to_processcommandcontrol.\
   preferred_output_modality` is a Phase-1 embodiment detail (MS §9.3 leaves \
   this open, MS §11 assigns it to ProcessCommandControl, not you): set it to \
   "voice" or "text" ONLY when the user's message explicitly asked for that \
@@ -908,7 +988,7 @@ illustrative — MS §12.5 is the authoritative contract, this is a shape guide)
 # it is Phase 1's stand-in for ProcessCommandControl "conducting the action
 # in the world" (MS §11). Plain text, not a JSON contract — but it DOES get
 # the MetaScheme (cheap: same cached prefix as the other 3 calls) and
-# Liriel's own current VOV_0000, because MS §2.6/§4/§5/§13.6 are explicit
+# Liriel's own current row, because MS §2.6/§4/§5/§13.6 are explicit
 # that no move — not the choice of objective, not the concrete act that
 # carries it out — is the Libido/Feelings alone: the Ordinances in
 # operation, narrowed by the Restrictive Schemas (Character, Personality,
@@ -929,7 +1009,7 @@ def build_reply_prompt(
     handoff_json = handoff.model_dump_json(indent=2) if handoff else "null"
     self_json = (
         json.dumps(_vov_to_textual_dict(liriel_self), indent=2, ensure_ascii=False)
-        if liriel_self else "null  # VOV_0000 not found in MOV"
+        if liriel_self else "null  # Liriel's own row (settings.liriel_self_vov_id) not found in MOV"
     )
     mov_block = (
         f"""
@@ -957,7 +1037,7 @@ embodiment open) — it is where Liriel's elected objective becomes the \
 actual words she speaks, standing in for ProcessCommandControl \
 "conducting the action in the world" (MS §11).
 
-ARTIFACT: Liriel's own VOV (VOV_0000) — her Feelings (the Libido's current \
+ARTIFACT: Liriel's own VOV — her Feelings (the Libido's current \
 charge, MS §2.6/§3), her Ordinances in operation (the channels the demand \
 is running through, MS §4) and her Restrictive Schemas (Character/ \
 Personality/Culture/BodyFeatures — the banks that narrow those channels \
@@ -977,6 +1057,13 @@ ARTIFACT: Handoff notes (why_now, constraints, etc. — for your own consistency
 QUERY
 process: Phase-1 embodiment bridge (no MS §12 contract)
 task: >
+  MS §0.4's JSON-only output rule governs ProcessMotivation's own queries \
+  (§12.1-§12.6) — this is not one of those; this `process` is not \
+  ProcessMotivation, precisely because it stands in for \
+  ProcessCommandControl (MS §9.3/§11.2 leave its output open by design). \
+  Output plain natural-language text, never JSON, never an \
+  ARCHITECTURE_FAULT — that contract answers a malformed *ProcessMotivation* \
+  query, and this genuinely isn't one. \
   Voice the reply in first person, as Liriel. This call stands in for \
   ProcessCommandControl "conducting the action in the world" (MS §11) — it \
   CARRIES OUT what ProcessMotivation already decided; it does not take a \
@@ -1002,7 +1089,7 @@ task: >
   having processed it yet, not something to patch over here — reply from \
   what the Best-Prey Guess and handoff actually give you, warmly \
   acknowledging the rest was heard without inventing engagement with \
-  specifics that were never decided. Per MS §4.7/§5/§13.6, her VOV_0000 \
+  specifics that were never decided. Per MS §4.7/§5/§13.6, her own row \
   above is what makes the pursuit of the objective distinctly hers rather \
   than a generic assistant's — the same demand run through a different \
   Ordinance mix and a different Character/Personality would come out as a \

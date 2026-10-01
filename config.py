@@ -92,6 +92,15 @@ class Settings:
 
     # --- Core identity (Phase 1 policy, not an MS §12 field) ---
     protected_vov_ids: frozenset[str]
+    # Liriel's own row's vov_id — a nickname like any other since the id
+    # migration (MS §6.4), never the literal "VOV_0000" the MetaScheme's
+    # prose/examples used before that migration. motivation.py's
+    # build_reply_prompt call site looks her own row up by this, not a
+    # hardcoded string — confirmed for real: the hardcoded lookup silently
+    # returned None on every single cycle since the migration, meaning the
+    # reply-composition call never actually saw her own Ordinances/Schemas/
+    # Feelings (MS §4.7/§5/§13.6) at all.
+    liriel_self_vov_id: str
 
     # --- Database ---
     # Prefer the discrete PG* fields when a password contains reserved URI
@@ -240,6 +249,7 @@ def load_settings() -> Settings:
                 "PROTECTED_VOV_IDS", "VOV_0000,VOV_0001,VOV_0002"
             ).split(",") if v.strip()
         ),
+        liriel_self_vov_id=os.getenv("LIRIEL_SELF_VOV_ID", "PCI_Liriel_Self"),
     )
 
 

@@ -16,10 +16,13 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import tempfile
+import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from config import settings
 from models import AxisValence, MatrixObjectsValence, SchemaEntry, VectorObjectValence
@@ -111,6 +114,16 @@ class Database(ABC):
         entirely: the nickname's wording is the model's, uniqueness is
         the architecture's. `object_nature` is used only for the fallback
         label when `nickname` is blank/unusable."""
+
+    @abstractmethod
+    def all_vov_ids(self) -> List[str]:
+        """Every vov_id on record, any mov (including nested ones), active
+        or archived — vov_id is one global namespace (MS §6.4), so minting
+        a fresh one has to check against all of it, not just one mov's own
+        rows. Broken out as its own method (both concrete backends used to
+        do this inline, inside mint_vov_id itself) so DraftDatabase below
+        can check a real backend's existing ids directly, without routing
+        through its minting logic."""
 
     @abstractmethod
     def archive_object(self, vov_id: str) -> None:
@@ -488,11 +501,14 @@ class PostgresDatabase(Database):
             )
 
     @_with_reconnect
-    def mint_vov_id(self, nickname: Optional[str], object_nature: Optional[str] = None) -> str:
+    def all_vov_ids(self) -> List[str]:
         with self._conn.cursor() as cur:
             cur.execute("select vov_id from mov_objects")
-            existing_ids = [r[0] for r in cur.fetchall()]
-        return _mint_vov_id_from(existing_ids, nickname, object_nature)
+            return [r[0] for r in cur.fetchall()]
+
+    @_with_reconnect
+    def mint_vov_id(self, nickname: Optional[str], object_nature: Optional[str] = None) -> str:
+        return _mint_vov_id_from(self.all_vov_ids(), nickname, object_nature)
 
     @_with_reconnect
     def write_relation(
@@ -679,6 +695,20 @@ class JsonFileDatabase(Database):
     def upsert_object(self, mov_id: str, vov: VectorObjectValence) -> None:
         data = self._load_all()
         vov.archived = False
+        # PostgresDatabase's own upsert always stamps updated_at = now() in
+        # its SQL, regardless of whatever the Python object carries in that
+        # field -- this backend has to do the same itself, or a freshly
+        # minted VOV (whose model-supplied JSON never sets updated_at, only
+        # the free-text update_datetime) keeps updated_at=None. Confirmed
+        # for real, via DraftDatabase (this session's redesign): a brand
+        # new ScenarioData cluster, drafted here mid-cycle before its real
+        # Postgres commit, read as updated_at=None -- _evict_stale_clusters'
+        # own recency sort (motivation.py) treats a None timestamp as the
+        # oldest possible, so the cluster this cycle JUST created was the
+        # one AIRP's MemoryStrength cap evicted first, every time, the
+        # opposite of "oldest survives longest." graph_service.py's own
+        # _recency_factor has the identical blind spot for the same reason.
+        vov.updated_at = datetime.now(timezone.utc)
         raw = json.loads(vov.model_dump_json())
         raw["_mov_id"] = mov_id
         data[vov.vov_id] = raw
@@ -696,8 +726,11 @@ class JsonFileDatabase(Database):
             data[vov_id]["archived"] = False
             self._save_all(data)
 
+    def all_vov_ids(self) -> List[str]:
+        return list(self._load_all().keys())
+
     def mint_vov_id(self, nickname: Optional[str], object_nature: Optional[str] = None) -> str:
-        return _mint_vov_id_from(self._load_all().keys(), nickname, object_nature)
+        return _mint_vov_id_from(self.all_vov_ids(), nickname, object_nature)
 
     def write_relation(
         self,
@@ -711,12 +744,26 @@ class JsonFileDatabase(Database):
     ) -> None:
         relations = self._load_relations()
         entry = {
+            # Matches migrations/003_graph_of_traces.sql's own mov_relations
+            # columns, including the ones no caller ever actually sets
+            # (directed; `write_relation`'s own signature has no parameter
+            # for it, so it is always False in practice, same as Postgres's
+            # column default) — confirmed for real: DraftDatabase (this
+            # session's redesign) can hand a mid-cycle, not-yet-committed
+            # edge straight to graph_service.build_graph_of_traces, and its
+            # _edge_dict reads row["directed"] unconditionally; a relation
+            # dict missing the key outright (as this entry always did before)
+            # crashed the whole cycle the moment one such edge was read back
+            # before ever reaching the real database.
+            "id": str(uuid.uuid4()),
             "from_vov_id": from_vov_id, "to_vov_id": to_vov_id, "kind": kind,
+            "directed": False,
             "propositional": propositional, "affective": affective or [],
             "confidence": confidence, "since_text": since_text, "softened_at": None,
         }
         for i, r in enumerate(relations):
             if r["from_vov_id"] == from_vov_id and r["to_vov_id"] == to_vov_id and r["kind"] == kind:
+                entry["id"] = r.get("id", entry["id"])  # keep the same edge identity across an update, like Postgres's own on-conflict-do-update
                 relations[i] = entry
                 break
         else:
@@ -789,6 +836,253 @@ class JsonFileDatabase(Database):
             if len(results) >= limit:
                 break
         return results
+
+
+# ---------------------------------------------------------------------------
+# Deferred-write draft layer (this session's redesign, MS §11.1 sequencing)
+# ---------------------------------------------------------------------------
+
+class DraftDatabase(Database):
+    """A copy-on-write draft over a real `Database`, so a whole
+    ProcessMotivation cycle's worth of writes — Query 2's retrospective/
+    mov_ops/mainmemory_commands, across every retrieval round, and Query
+    3's own mov_ops on top of them — land in a private scratch store
+    instead of the real one, and become real only once, in `commit()`,
+    after every one of this cycle's own queries has fully concluded.
+
+    Why: confirmed for real, a report Liriel ultimately judged not
+    credible (a fabricated meteor-impact warning) still left an extreme,
+    maximum-confidence HopeFear on record, because Query 2 committed that
+    Feeling straight to the database before Query 3's fuller reading of
+    the same scene — the reading that actually produced the skepticism —
+    had even run. The fix the user asked for is not a new instruction
+    telling some query how to judge (MS §11.1: "the intelligence dwells in
+    the queries" is already true, judgment is never this module's to
+    second-guess) — it is that nothing this cycle writes should be
+    durable before every judgment this cycle makes has actually happened.
+    A later query in the SAME cycle needs to see an earlier one's proposed
+    writes as if they were already real (that is the entire point of
+    letting it revise them) without them actually being real yet — hence
+    a draft, not a delay.
+
+    Every read here falls through to the real database until THIS draft
+    has itself written that row/edge; every write lands only in the
+    draft's own private `JsonFileDatabase` (chosen because it already
+    implements this same `Database` interface end to end — no method
+    below needed new logic beyond "check the draft first, else ask the
+    real one," so every existing write path (_apply_mov_ops,
+    _apply_retrospective, _apply_mainmemory_commands, _ensure_relation_edges,
+    graph_service's own restore_object calls, ...) works against a
+    DraftDatabase completely unchanged). `commit()` is the one place this
+    object ever touches the real database, and it is purely mechanical —
+    a replay of decisions already made, not a decision of its own — same
+    standing this session already draws around `_evict_stale_clusters` and
+    `_renumber_stale_objectives`: bookkeeping, never judgment.
+    """
+
+    def __init__(self, real: Database):
+        self._real = real
+        self._scratch_dir = Path(tempfile.mkdtemp(prefix="liriel_draft_"))
+        self._scratch = JsonFileDatabase(self._scratch_dir / "draft.json")
+        self._touched_ids: set = set()
+        self._ensured_movs: Dict[str, Optional[str]] = {}
+
+    def load_mov(self, mov_id: str) -> MatrixObjectsValence:
+        # The real database's own load_mov (active rows only) is the cheap
+        # starting point — the scratch draft only ever holds what THIS
+        # cycle touched, never the whole archive, so there's no need to
+        # pull the real database's archived rows too just to merge them
+        # (unlike get_all_objects below, which genuinely needs both).
+        merged = {vov.vov_id: vov for vov in self._real.load_mov(mov_id).objects}
+        for vov in self._scratch.get_all_objects(mov_id):
+            if vov.archived:
+                merged.pop(vov.vov_id, None)  # drafted archive of a real-active row
+            else:
+                merged[vov.vov_id] = vov  # new, restored, or patched this cycle
+        return MatrixObjectsValence(mov_id=mov_id, objects=list(merged.values()))
+
+    def get_object(self, vov_id: str) -> Optional[VectorObjectValence]:
+        if vov_id in self._touched_ids:
+            return self._scratch.get_object(vov_id)
+        return self._real.get_object(vov_id)
+
+    def get_object_mov_id(self, vov_id: str) -> Optional[str]:
+        if vov_id in self._touched_ids:
+            return self._scratch.get_object_mov_id(vov_id)
+        return self._real.get_object_mov_id(vov_id)
+
+    def get_all_objects(self, mov_id: str) -> List[VectorObjectValence]:
+        # Unlike load_mov, SEARCH (graph_service.search_memory's blind
+        # fallback, and its own contextual/recency pool) genuinely needs
+        # the full archive, active and archived alike — that's the one
+        # case a real get_all_objects call can't be skipped.
+        merged = {vov.vov_id: vov for vov in self._real.get_all_objects(mov_id)}
+        merged.update({vov.vov_id: vov for vov in self._scratch.get_all_objects(mov_id)})
+        return list(merged.values())
+
+    def upsert_object(self, mov_id: str, vov: VectorObjectValence) -> None:
+        self._scratch.upsert_object(mov_id, vov)
+        self._touched_ids.add(vov.vov_id)
+
+    def replace_object(self, mov_id: str, vov: VectorObjectValence) -> None:
+        self._scratch.replace_object(mov_id, vov)
+        self._touched_ids.add(vov.vov_id)
+
+    def mint_vov_id(self, nickname: Optional[str], object_nature: Optional[str] = None) -> str:
+        return _mint_vov_id_from(self.all_vov_ids(), nickname, object_nature)
+
+    def all_vov_ids(self) -> List[str]:
+        return list(set(self._real.all_vov_ids()) | set(self._scratch.all_vov_ids()))
+
+    def _copy_forward(self, vov_id: str) -> Optional[VectorObjectValence]:
+        """archive_object/restore_object need the row to actually exist in
+        the scratch store before flipping its archived bit there (the JSON
+        backend's own archive_object/restore_object are no-ops on an id it
+        doesn't hold) — pull it from the real database once, the first
+        time this draft ever touches it."""
+        vov = self._real.get_object(vov_id)
+        if vov is None:
+            return None
+        mov_id = self._real.get_object_mov_id(vov_id) or settings.default_mov_id
+        self._scratch.upsert_object(mov_id, vov)
+        return vov
+
+    def archive_object(self, vov_id: str) -> None:
+        if vov_id not in self._touched_ids and self._copy_forward(vov_id) is None:
+            return
+        self._scratch.archive_object(vov_id)
+        self._touched_ids.add(vov_id)
+
+    def restore_object(self, vov_id: str) -> None:
+        if vov_id not in self._touched_ids and self._copy_forward(vov_id) is None:
+            return
+        self._scratch.restore_object(vov_id)
+        self._touched_ids.add(vov_id)
+
+    def get_relations(self, vov_ids: list, relation_kinds: Optional[list] = None) -> list:
+        # Keyed by (from, to, kind) — a draft edge shadows the real one
+        # under the exact same identity write_relation itself uses to
+        # decide "update in place" vs. "a new edge" (MS §12.4).
+        merged: Dict[tuple, dict] = {}
+        for row in self._real.get_relations(vov_ids, relation_kinds):
+            merged[(row["from_vov_id"], row["to_vov_id"], row["kind"])] = row
+        for row in self._scratch.get_relations(vov_ids, relation_kinds):
+            merged[(row["from_vov_id"], row["to_vov_id"], row["kind"])] = row
+        return list(merged.values())
+
+    def write_relation(
+        self,
+        from_vov_id: str,
+        to_vov_id: str,
+        kind: str,
+        propositional: Optional[str] = None,
+        affective: Optional[list] = None,
+        confidence: Optional[int] = None,
+        since_text: Optional[str] = None,
+    ) -> None:
+        self._scratch.write_relation(
+            from_vov_id=from_vov_id, to_vov_id=to_vov_id, kind=kind,
+            propositional=propositional, affective=affective,
+            confidence=confidence, since_text=since_text,
+        )
+
+    def soften_charge(self, vov_ids: list) -> None:
+        # Unlike write_relation (where get_relations' own merge already
+        # gives a fresh draft edge priority over a stale real one),
+        # soften_charge needs every edge touching vov_ids to actually be
+        # IN the scratch store before it runs — the JSON backend's own
+        # soften_charge only ever iterates its own relations file — so any
+        # real edge not yet shadowed is copied forward here first.
+        if not vov_ids:
+            return
+        scratch_keys = {
+            (r["from_vov_id"], r["to_vov_id"], r["kind"]) for r in self._scratch.get_relations(vov_ids)
+        }
+        for row in self._real.get_relations(vov_ids):
+            key = (row["from_vov_id"], row["to_vov_id"], row["kind"])
+            if key in scratch_keys:
+                continue
+            self._scratch.write_relation(
+                from_vov_id=row["from_vov_id"], to_vov_id=row["to_vov_id"], kind=row["kind"],
+                propositional=row.get("propositional"), affective=row.get("affective"),
+                confidence=row.get("confidence"), since_text=row.get("since_text"),
+            )
+        self._scratch.soften_charge(vov_ids)
+
+    def ensure_mov(self, mov_id: str, label: Optional[str] = None) -> None:
+        self._scratch.ensure_mov(mov_id, label)  # no-op on the JSON backend
+        self._ensured_movs[mov_id] = label
+
+    # Cycle history is read-only context from PAST (already-committed)
+    # cycles, and logging THIS cycle is a one-time audit write, not a
+    # content judgment anything downstream could still revise — neither
+    # belongs in the draft; both go straight to the real database.
+    def log_cycle(
+        self,
+        mov_id: str,
+        scenario_text: str,
+        update_result: Optional[dict],
+        decision_result: Optional[dict],
+        response_text: str,
+        graph_of_traces: Optional[dict] = None,
+    ) -> None:
+        self._real.log_cycle(mov_id, scenario_text, update_result, decision_result, response_text, graph_of_traces)
+
+    def get_recent_scenario_texts(self, mov_id: str, limit: int = 3) -> List[str]:
+        return self._real.get_recent_scenario_texts(mov_id, limit)
+
+    def get_recent_decision_results(self, mov_id: str, limit: int = 200) -> List[dict]:
+        return self._real.get_recent_decision_results(mov_id, limit)
+
+    def commit(self) -> None:
+        """The only place this draft ever touches the real database —
+        called once, after every one of this cycle's own queries has fully
+        concluded. Purely mechanical: every judgment already happened
+        while this draft was being built; this only makes it durable.
+
+        Uses replace_object, not upsert_object, for each touched row: the
+        draft's own copy is already a complete, correct final VOV (built
+        through the same _coerce_patch/_coerce_vov merging every write
+        path already goes through) — a plain upsert would leave a feelings
+        axis this cycle actually cleared still sitting in the real row
+        untouched, the exact bug replace_object was introduced to fix
+        elsewhere in this pipeline (a stale Feeling surviving a
+        model_copy(update={"feelings": {}})). Both backends' upsert_object
+        also unconditionally clears archived_at — mirroring that would
+        silently un-archive anything this draft actually decided to file
+        away, so archive_object is called explicitly, right after, for
+        every row whose final drafted state is archived.
+        """
+        for mov_id, label in self._ensured_movs.items():
+            self._real.ensure_mov(mov_id, label)
+        for vov_id in self._touched_ids:
+            vov = self._scratch.get_object(vov_id)
+            if vov is None:
+                continue
+            # Captured before replace_object: JsonFileDatabase.upsert_object
+            # (which replace_object falls back to on both backends' write
+            # path) mutates its own `vov` argument's `.archived` to False
+            # in place before writing it — checking vov.archived AFTER that
+            # call would always see the post-mutation value, silently
+            # dropping every archive this draft actually decided.
+            was_archived = vov.archived
+            mov_id = self._scratch.get_object_mov_id(vov_id) or settings.default_mov_id
+            self._real.replace_object(mov_id, vov)
+            if was_archived:
+                self._real.archive_object(vov_id)
+        for row in self._scratch._load_relations():
+            self._real.write_relation(
+                from_vov_id=row["from_vov_id"], to_vov_id=row["to_vov_id"], kind=row["kind"],
+                propositional=row.get("propositional"), affective=row.get("affective"),
+                confidence=row.get("confidence"), since_text=row.get("since_text"),
+            )
+
+    def cleanup(self) -> None:
+        """Discards this draft's scratch files. Safe to call whether or not
+        commit() ever ran — an abandoned draft (a cycle that crashed before
+        concluding) simply vanishes along with it, which is correct: none
+        of it ever reached the real database either."""
+        shutil.rmtree(self._scratch_dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------

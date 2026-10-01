@@ -48,7 +48,7 @@ from pydantic import ValidationError
 
 import graph_service
 from config import settings
-from database import Database
+from database import Database, DraftDatabase
 
 # config.LLM_BACKEND picks which of the two ends up bound to chat/chat_json
 # here — both modules expose the same (messages, temperature, effort, model)
@@ -120,7 +120,34 @@ def run_motivation_cycle(
     reply channel (MS §11: ProcessCommandControl's call, via the Query 3
     handoff), else None, meaning the front end should mirror whatever
     channel the message itself arrived on.
+
+    MS §11.1 sequencing (this session's redesign, database.DraftDatabase):
+    everything below runs against a private draft, not `db` itself — every
+    write Query 1's own recall (RESTORE_VOV), Query 2 (retrospective,
+    mov_ops, mainmemory_commands, across every retrieval round) and Query 3
+    (its own mov_ops) make this cycle lands there, and only there. Query 3
+    still reads all of it as if it were already real (the draft answers
+    every read the same way the real database would) and can PATCH_VOV
+    over anything Query 2 proposed before any of it is durable — that is
+    the entire point: this cycle's judgment does not finish until Query 3
+    concludes, so nothing this cycle writes should be final before then
+    either. `db.commit()` below, once Query 3's own writes are in, is the
+    single moment any of it reaches the real database.
     """
+    real_db = db
+    db = DraftDatabase(real_db)
+    try:
+        return _run_motivation_cycle_drafted(db, mov, user_text, source)
+    finally:
+        db.cleanup()
+
+
+def _run_motivation_cycle_drafted(
+    db: DraftDatabase, mov: MatrixObjectsValence, user_text: str, source: str
+) -> tuple[str, MatrixObjectsValence, Optional[str]]:
+    """The actual cycle body, unchanged from before the MS §11.1 sequencing
+    redesign — every `db` reference here is the DraftDatabase run_motivation_cycle
+    just built; no write below reaches the real database until db.commit()."""
     scenario = ScenarioData(text=user_text, source=source)
     nested_movs = _load_nested_movs(db, mov, settings.nested_mov_max_depth)
 
@@ -335,6 +362,11 @@ def run_motivation_cycle(
         mov.upsert(obj)
         ranked_ids.append(obj.vov_id)
     _apply_mov_ops(db, mov.mov_id, decision_result.mov_ops)
+    # MS §6.11 audit (this session's redesign): Query 3 may have found a
+    # feelings entry on the shared MOV that's actually the Object's own
+    # state, not Liriel's — the same wiring Query 2's own nested_mov_ops
+    # already uses to carry out that exact move (MS §6.8's mirror).
+    _apply_nested_mov_ops(db, decision_result.nested_mov_ops)
 
     mov = db.load_mov(mov.mov_id)
     _renumber_stale_objectives(db, mov, ranked_ids)
@@ -342,11 +374,25 @@ def run_motivation_cycle(
     _evict_stale_clusters(db, mov)
     mov = db.load_mov(mov.mov_id)
 
+    # MS §11.1: every judgment this cycle makes (Query 1's recall, Query 2
+    # across every retrieval round, Query 3, and the mechanical renumber/
+    # evict passes just above) has now concluded — this is the one point
+    # any of it becomes durable. Nothing below writes to the MOV at all
+    # (Phase 1's reply-composition bridge is read-only, MS §0.4's own
+    # scoping), so committing here rather than after log_cycle changes
+    # nothing about what gets persisted, only that the database reflects
+    # this cycle's outcome before the (slower) reply LLM call runs.
+    db.commit()
+
     # --- Phase 1 bridge: compose the actual chat reply --------------------
     # MS §2.6/§4/§5: the reply is Liriel's move, and no move is Feelings
     # alone — it's her own current Ordinances-in-operation, narrowed by her
-    # Restrictive Schemas, that make it hers. VOV_0000 carries all three.
-    liriel_self = mov.get("VOV_0000")
+    # Restrictive Schemas, that make it hers. Her own row carries all three
+    # — looked up by settings.liriel_self_vov_id (a nickname, MS §6.4), not
+    # a hardcoded "VOV_0000": that literal lookup previously returned None
+    # on every cycle since the id migration, silently starving this call of
+    # her own state.
+    liriel_self = mov.get(settings.liriel_self_vov_id)
     reply_artifacts = Artifacts(
         meta_scheme=META_SCHEME, mov=mov, nested_movs=nested_movs,
         graph_of_traces=graph_of_traces, scenario_data=scenario,
@@ -989,63 +1035,6 @@ def _fallback_relation_kind(a_nature: Optional[str], b_nature: Optional[str]) ->
     return "Link_Valence_Load"
 
 
-def _scenario_datas_share_member(db: Database, vov: VectorObjectValence, other_sd_id: str) -> bool:
-    """True only when `vov` and `other_sd_id` (both `ScenarioData`) share at
-    least one real concerned party — a Sentient, Situation, or the like,
-    never another `ScenarioData`. MS §6.10/§14.19: two `ScenarioData` rows
-    belong to the same backbone only when the report is genuinely the same
-    matter continuing, which in practice always means they are about at
-    least one of the same people/situations — two matters that merely
-    share the one person who reports everything to Liriel (MS §13.1's
-    universal reporter, e.g. Fábio) do NOT thereby become the same matter.
-    A `ScenarioData` neighbor is deliberately excluded from both sides of
-    this comparison — chaining through one to justify linking to another
-    is exactly how one wrong edge merges two unrelated clusters into one
-    (see _link_scenario_data_siblings's own docstring for the confirmed
-    incident this guards against from the other direction)."""
-    vov_member_ids = {rid for rid in vov.relevant_relations if rid != other_sd_id}
-    if not vov_member_ids:
-        return False
-    vov_members = db.get_objects(list(vov_member_ids))
-    vov_member_ids = {
-        rid for rid in vov_member_ids
-        if vov_members.get(rid) and vov_members[rid].object_nature != "ScenarioData"
-    }
-    if not vov_member_ids:
-        return False
-    other_neighbor_ids = {
-        (row["to_vov_id"] if row["from_vov_id"] == other_sd_id else row["from_vov_id"])
-        for row in db.get_relations([other_sd_id], ["Link_Subject_Cluster"])
-    }
-    other_neighbors = db.get_objects(list(other_neighbor_ids))
-    other_member_ids = {
-        nid for nid in other_neighbor_ids
-        if other_neighbors.get(nid) and other_neighbors[nid].object_nature != "ScenarioData"
-    }
-    return bool(vov_member_ids & other_member_ids)
-
-
-def _scenario_data_ids_share_member(db: Database, sd_a_id: str, sd_b_id: str) -> bool:
-    """Same check as `_scenario_datas_share_member`, for two already-
-    persisted `ScenarioData` ids — used by the WRITE_RELATION mainmemory-
-    command path, where (unlike `_ensure_relation_edges`'s in-progress
-    `vov`) both sides are already fully written with their own edges by
-    the time this runs (`_apply_mov_ops` always completes before
-    `_apply_mainmemory_commands` in the same round)."""
-    def _members(sd_id: str) -> set:
-        neighbor_ids = {
-            (row["to_vov_id"] if row["from_vov_id"] == sd_id else row["from_vov_id"])
-            for row in db.get_relations([sd_id], ["Link_Subject_Cluster"])
-        }
-        neighbors = db.get_objects(list(neighbor_ids))
-        return {nid for nid in neighbor_ids if neighbors.get(nid) and neighbors[nid].object_nature != "ScenarioData"}
-
-    a_members = _members(sd_a_id)
-    if not a_members:
-        return False
-    return bool(a_members & _members(sd_b_id))
-
-
 def _ensure_relation_edges(db: Database, vov: VectorObjectValence) -> None:
     """Every relation a VOV claims via `relevant_relations` (MS §6.4)
     becomes a real, walkable `mov_relations` edge (MS §8) — a fallback
@@ -1077,98 +1066,15 @@ def _ensure_relation_edges(db: Database, vov: VectorObjectValence) -> None:
         if other is None:
             continue  # relevant_relations can point at a stale/typo'd id -- don't invent an edge to nothing
         kind = _fallback_relation_kind(vov.object_nature, other.object_nature)
-        if (
-            kind == "Link_Subject_Cluster"
-            and vov.object_nature == "ScenarioData"
-            and other.object_nature == "ScenarioData"
-            and not _scenario_datas_share_member(db, vov, other_id)
-        ):
-            # MS §6.10/§14.19: chaining onto an existing backbone requires
-            # the report to genuinely be the same matter continuing, not
-            # merely a recent ScenarioData in focus. Confirmed for real: a
-            # brand-new, unrelated matter's ScenarioData was linked to the
-            # most recent one in focus (sharing only the universal reporter,
-            # no actual concerned party) — refusing the edge here is what
-            # keeps the two clusters from merging into one at the source,
-            # rather than only cleaning up the cascade afterward.
-            print(f"[notice] refused Link_Subject_Cluster between ScenarioData "
-                  f"{vov.vov_id!r} and {other_id!r}: no shared concerned party "
-                  f"between them — treating as different matters (MS §6.10/§14.19)")
-            continue
+        # No mechanical veto here on purpose: whether two ScenarioData rows
+        # are "the same matter" is a content judgment (MS §6.10/§11.1),
+        # never code's to second-guess. If the model wrote this into
+        # relevant_relations, it already made that call — an earlier
+        # "shared member" heuristic here once refused/rewrote the model's
+        # own correct judgment and, worse, was later found to auto-merge
+        # unrelated matters on its own (see _apply_mov_ops's history).
         db.write_relation(from_vov_id=vov.vov_id, to_vov_id=other_id, kind=kind)
         connected.add(other_id)
-
-
-def _link_scenario_data_siblings(db: Database, vov: VectorObjectValence) -> None:
-    """MS §6.10: every `ScenarioData` Object of the same cluster should be
-    directly reachable from any other via `Link_Subject_Cluster`, not left
-    to rely on TraceDepth's BFS threading through their shared members
-    alone. Confirmed for real: a chain of 5 `ScenarioData` siblings for the
-    same matter — each one correctly sharing `Link_Subject_Cluster` edges
-    to the exact same four Sentients — had only ONE direct backbone-to-
-    backbone edge among the five, even though which cluster each belonged
-    to was never actually in doubt anywhere in the data.
-
-    This derives the missing edges mechanically from a fact the model
-    ALREADY established — which non-`ScenarioData` Objects this row shares
-    a `Link_Subject_Cluster` edge with — rather than guessing which
-    cluster something belongs to: it only ever connects two `ScenarioData`
-    rows that each, independently, already claim the same member. That
-    keeps it on the safe side of this codebase's own standing line (MS
-    §11.1: "the intelligence dwells in the queries") — nothing here
-    decides membership, it only completes the structural consequence of a
-    membership decision the model already made.
-
-    The "member" set MUST exclude other `ScenarioData` rows, not just
-    happen to usually be Sentients/Situations — confirmed for real, the
-    first version of this function used every `Link_Subject_Cluster`
-    neighbor undiscriminated, including sibling ScenarioData themselves.
-    One model-authored mistake (an unrelated new matter's ScenarioData
-    wrongly linked to an existing one, e.g. because both were recent) was
-    enough to chain through THAT ScenarioData's own neighbors and merge
-    two genuinely separate clusters into one sprawling mass in a single
-    pass — this function amplifying a single bad edge into dozens, which
-    is the opposite of what it exists for. Only a real concerned party
-    (Sentient, Situation, ...) shared between two `ScenarioData` rows is
-    evidence they belong together; another `ScenarioData` being reachable
-    proves nothing on its own, since that reachability is exactly the fact
-    in question."""
-    if vov.object_nature != "ScenarioData":
-        return
-    neighbor_ids = {
-        (row["to_vov_id"] if row["from_vov_id"] == vov.vov_id else row["from_vov_id"])
-        for row in db.get_relations([vov.vov_id], ["Link_Subject_Cluster"])
-    }
-    if not neighbor_ids:
-        return
-    neighbors = db.get_objects(list(neighbor_ids))
-    members = {
-        nid for nid in neighbor_ids
-        if neighbors.get(nid) and neighbors[nid].object_nature != "ScenarioData"
-    }
-    if not members:
-        return
-    sibling_ids: set = set()
-    for member_id in members:
-        for row in db.get_relations([member_id], ["Link_Subject_Cluster"]):
-            other = row["to_vov_id"] if row["from_vov_id"] == member_id else row["from_vov_id"]
-            if other != vov.vov_id:
-                sibling_ids.add(other)
-    if not sibling_ids:
-        return
-    already_connected = {
-        (row["to_vov_id"] if row["from_vov_id"] == vov.vov_id else row["from_vov_id"])
-        for row in db.get_relations([vov.vov_id])
-    }
-    related = db.get_objects(list(sibling_ids))
-    for sid in sibling_ids:
-        sibling = related.get(sid)
-        if sibling is None or sibling.object_nature != "ScenarioData" or sid in already_connected:
-            continue
-        db.write_relation(from_vov_id=vov.vov_id, to_vov_id=sid, kind="Link_Subject_Cluster")
-        print(f"[notice] auto-linked ScenarioData backbone siblings {vov.vov_id!r} <-> {sid!r} "
-              f"(shared cluster member) — MS §6.10 backbone connectivity")
-        already_connected.add(sid)
 
 
 def _enforce_objective_cluster_only_relations(db: Database, vov: VectorObjectValence) -> VectorObjectValence:
@@ -1212,11 +1118,18 @@ def _upsert_and_link(db: Database, mov_id: str, vov: VectorObjectValence) -> Non
     """db.upsert_object, plus _ensure_relation_edges right after — every
     write path in this module should go through this instead of calling
     db.upsert_object directly, so no VOV can end up claiming a relation in
-    its own `relevant_relations` that the actual graph can't walk to."""
+    its own `relevant_relations` that the actual graph can't walk to.
+    Deliberately does NOT auto-complete any further edges beyond what the
+    model itself claimed: an earlier `_link_scenario_data_siblings` pass
+    tried to fill in "missing" ScenarioData-to-ScenarioData backbone edges
+    from a shared-member heuristic, and that heuristic auto-merged two
+    unrelated matters that only happened to share a reporter. Whether two
+    ScenarioData belong to the same cluster is a content judgment (MS
+    §6.10/§11.1) — the model must write every edge it means to exist
+    itself; no backend process infers or completes one on its behalf."""
     vov = _enforce_objective_cluster_only_relations(db, vov)
     db.upsert_object(mov_id, vov)
     _ensure_relation_edges(db, vov)
-    _link_scenario_data_siblings(db, vov)
 
 
 def _nature_conflicts(existing: VectorObjectValence, expected_nature: Optional[str]) -> bool:
@@ -1341,7 +1254,7 @@ def _agent_fields_present(patch: dict) -> bool:
 
 
 def _is_protected(vov_id: Optional[str]) -> bool:
-    """Core identity (VOV_0000 + her creator/developer, config.py's
+    """Core identity (Liriel's own row + her creator/developer, config.py's
     protected_vov_ids) is exempt from MS §7's focus/archive cycle — losing
     one of these from the MOV isn't forgetting a case detail, it's losing
     who Liriel is. Everything else archives and retrieves via the Graph of
@@ -1383,6 +1296,19 @@ def _coerce_patch(existing: VectorObjectValence, patch: dict) -> dict:
         if nested_field in out and isinstance(out.get(nested_field), dict):
             merged = dict(getattr(existing, nested_field))
             for key, raw_entry in out[nested_field].items():
+                if raw_entry is None:
+                    # The merge below only ever adds/updates an entry —
+                    # nothing short of this let a PATCH_VOV actually REMOVE
+                    # a stale axis (MS §3.2: a blank axis is itself
+                    # information, not the same thing as some other value).
+                    # Confirmed for real: the only way to clear one used to
+                    # be a direct db.replace_object call from outside the
+                    # model's own mov_ops entirely. An explicit JSON `null`
+                    # for a specific key is the model's own request to drop
+                    # it — same "the model decides what, code just carries
+                    # it out" boundary as every other op here.
+                    merged.pop(key, None)
+                    continue
                 if isinstance(raw_entry, dict):
                     # MS §3.5's textual redesign: `v` arrives as a word
                     # ("strong Fear") — convert back to the float this
@@ -1477,8 +1403,23 @@ def _apply_mainmemory_commands(db: Database, commands: list) -> None:
         elif op == "WRITE_RELATION" and cmd.get("from") and cmd.get("to") and cmd.get("kind"):
             from_id, to_id = cmd["from"], cmd["to"]
             from_obj, to_obj = db.get_object(from_id), db.get_object(to_id)
-            from_nature = from_obj.object_nature if from_obj else None
-            to_nature = to_obj.object_nature if to_obj else None
+            if from_obj is None or to_obj is None:
+                # Same reasoning as _ensure_relation_edges's own "relevant_
+                # relations can point at a stale/typo'd id -- don't invent
+                # an edge to nothing": this command's from/to isn't a
+                # content judgment to second-guess, it's a mechanical
+                # existence check. Confirmed for real: a WRITE_RELATION
+                # named a vov_id ("Sentient_Camila_EsposaFabio") the model
+                # never actually minted this cycle or any prior one --
+                # writing it straight through crashed on a foreign-key
+                # violation, losing the ENTIRE cycle's output (MS §11.1
+                # sequencing means nothing this cycle decided is durable
+                # until every query has concluded and committed together).
+                missing = from_id if from_obj is None else to_id
+                print(f"[warning] WRITE_RELATION names {missing!r}, which doesn't exist "
+                      f"(not created this cycle, no prior row either) — skipped: {cmd}")
+                continue
+            from_nature, to_nature = from_obj.object_nature, to_obj.object_nature
             if "Objective" in (from_nature, to_nature) and "ScenarioData" not in (from_nature, to_nature):
                 # MS §6.10, same invariant _enforce_objective_cluster_only_
                 # relations holds for relevant_relations -- but a model's
@@ -1496,17 +1437,10 @@ def _apply_mainmemory_commands(db: Database, commands: list) -> None:
                       f"{to_id!r} ({to_nature}): an Objective may only link to its "
                       f"ScenarioData origin (MS §6.10) — skipped")
                 continue
-            if (
-                from_nature == "ScenarioData" and to_nature == "ScenarioData"
-                and not _scenario_data_ids_share_member(db, from_id, to_id)
-            ):
-                # Same guard _ensure_relation_edges applies to a
-                # relevant_relations-derived edge, for the other path a
-                # model can use to write one directly (MS §6.10/§14.19).
-                print(f"[notice] refused WRITE_RELATION {from_id!r} <-> {to_id!r}: "
-                      f"no shared concerned party between these two ScenarioData — "
-                      f"treating as different matters (MS §6.10/§14.19) — skipped")
-                continue
+            # No "shared member" veto here on purpose, same reasoning as
+            # _ensure_relation_edges: whether two ScenarioData are the same
+            # matter is the model's own call to make when it writes this
+            # command — not code's to second-guess by a heuristic.
             kind = cmd["kind"]
             if kind not in _RELATION_KINDS:
                 print(f"[notice] WRITE_RELATION kind={kind!r} isn't one of the closed three "

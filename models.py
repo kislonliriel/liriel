@@ -940,6 +940,13 @@ class BestPreyGuessResult(BaseModel):
     accompanying_objectives: List[VectorObjectValence] = Field(default_factory=list)
     handoff_to_processcommandcontrol: Optional[HandoffToProcessCommandControl] = None
     mov_ops: List[MovOp] = Field(default_factory=list)
+    # This session's redesign: Query 3 is now asked to audit every `feelings`
+    # entry across the Updated MOV for §6.11 ownership (Liriel's own charge
+    # vs. a copy of what the Object itself feels) — Query 2 already had
+    # nested_mov_ops for exactly this move (MS §6.8's mirror), but Query 3
+    # had no way to carry out a correction it found, only to flag or ignore
+    # it. Same shape, same mechanism, same place a correction belongs.
+    nested_mov_ops: List[NestedMovOp] = Field(default_factory=list)
     notes: Optional[str] = None
 
     @model_validator(mode="before")

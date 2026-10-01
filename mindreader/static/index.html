@@ -73,11 +73,45 @@
     padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600;
   }
   #detail .nested-link:hover { background: rgba(245,197,24,0.22); }
+  #detail .vector-link {
+    display: inline-block; margin-bottom: 14px;
+    background: rgba(90,169,230,0.12); color: #5aa9e6; border: 1px solid rgba(90,169,230,0.4);
+    padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600;
+  }
+  #detail .vector-link:hover { background: rgba(90,169,230,0.22); }
 
   #empty-msg {
     position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
     color: var(--text-dim); font-size: 15px; flex-direction: column; gap: 10px;
   }
+
+  /* Full-vector modal (all 14 Feelings, all Ordinances, all Schemas — not
+     just the axes a row happens to have charged). A separate overlay
+     rather than stretching #detail: the point is to see the WHOLE vector
+     at once, side by side, which needs more width than the 320px side
+     panel gives. */
+  #vector-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 20;
+    display: none; align-items: center; justify-content: center;
+  }
+  #vector-overlay.open { display: flex; }
+  #vector-modal {
+    background: var(--panel); border: 1px solid var(--panel-border); border-radius: 12px;
+    width: min(900px, 92vw); max-height: 86vh; overflow-y: auto; padding: 22px 26px;
+    position: relative;
+  }
+  #vector-modal h2 { margin: 0 2px 2px; font-size: 18px; color: var(--accent); }
+  #vector-modal .nature { font-size: 12px; color: var(--text-dim); margin: 0 2px 16px; }
+  #vector-modal .close { position: absolute; top: 16px; right: 18px; cursor: pointer; color: var(--text-dim); font-size: 20px; background: none; border: none; }
+  #vector-modal .close:hover { color: var(--text); }
+  #vector-columns { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; }
+  #vector-columns h3 { font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; margin: 0 0 8px; border-bottom: 1px solid var(--panel-border); padding-bottom: 6px; }
+  .vector-row { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; padding: 3px 0; border-bottom: 1px dotted var(--panel-border); }
+  .vector-row .key { color: var(--text); }
+  .vector-row .pole { color: var(--text-dim); font-size: 10px; display: block; }
+  .vector-row .val { color: var(--text); white-space: nowrap; }
+  .vector-row .val.unset { color: var(--text-dim); font-style: italic; }
+  @media (max-width: 760px) { #vector-columns { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
@@ -102,13 +136,20 @@
   <div class="note">
     <span class="ring-dot neg"></span> valência negativa forte (v ≤ −3)
     <br><span class="ring-dot pos"></span> valência positiva forte (v ≥ +3)
-    <br>tamanho = intensidade da valência dominante
+    <br>tamanho = intensidade da valência dominante (exceto ◆ AIRP, numerado por ordem de criação)
   </div>
 </div>
 
 <div id="detail">
   <button class="close" id="detail-close">✕</button>
   <div id="detail-body"></div>
+</div>
+
+<div id="vector-overlay">
+  <div id="vector-modal">
+    <button class="close" id="vector-close">✕</button>
+    <div id="vector-modal-body"></div>
+  </div>
 </div>
 
 <script>
@@ -127,6 +168,7 @@ let network = null;
 let lastData = null;
 let currentMovId = null;
 let movStack = []; // parent mov_ids visited on the way to the one shown now
+let currentDetailNode = null; // whichever node's #detail panel is open right now -- read by openVectorModal
 
 function fmtAxes(map) {
   const entries = Object.entries(map || {});
@@ -181,6 +223,7 @@ function fmtTacticalScene(info) {
 }
 
 function renderDetail(node) {
+  currentDetailNode = node; // read by openVectorModal below
   const d = node.detail;
   const body = document.getElementById("detail-body");
   let objectiveHtml = "";
@@ -235,7 +278,8 @@ function renderDetail(node) {
     : "";
   body.innerHTML = `
     <h2>${d.vov_id}</h2>
-    <div class="nature">${NATURE_LABELS[d.object_nature] || d.object_nature}${d.priority ? " · prioridade " + d.priority : ""}</div>
+    <div class="nature">${NATURE_LABELS[d.object_nature] || d.object_nature}${d.priority ? " · prioridade " + d.priority : ""}${d.scenario_seq ? " · #" + d.scenario_seq + " (ordem de criação)" : ""}</div>
+    <button class="vector-link" onclick="openVectorModal()">📊 Ver vetor completo (todas as dimensões)</button>
     <div class="field"><label>Descrição</label><div class="val">${d.brief_description || "—"}</div></div>
     ${d.relevant_remarks ? `<div class="field"><label>Observações (relevant_remarks)</label><div class="val">${d.relevant_remarks}</div></div>` : ""}
     <div class="field"><label>Tipo / Regime</label><div class="val">${d.object_type} · ${d.valence_regime}</div></div>
@@ -249,6 +293,53 @@ function renderDetail(node) {
     <div class="field"><label>Ordenanças</label><div class="val">${fmtAxes(d.ordinances)}</div></div>
   `;
   document.getElementById("detail").classList.add("open");
+}
+
+// One row per axis the reference list defines (models.py's FEELING_AXES/
+// ORDINANCE_KEYS/SCHEMA_KEYS, sent once as data.axis_reference) -- unlike
+// fmtAxes above (which only ever lists axes this VOV happens to have
+// charged), this shows EVERY dimension the architecture defines, marking
+// the rest as unset rather than omitting them. That's the whole point of
+// "ver o status de todo o vetor": a blank axis is itself information (MS
+// §3.2 -- most axes are left neutral, not zero), not a gap in the display.
+function fmtFullFeelingRow(axisDef, entry) {
+  const val = entry
+    ? `<span class="val">v=${entry.v}&nbsp;&nbsp;c=${entry.c ?? "—"}</span>`
+    : `<span class="val unset">— neutro —</span>`;
+  return `<div class="vector-row">
+    <span class="key">${axisDef.label}<span class="pole">${axisDef.positive_pole} / ${axisDef.negative_pole}</span></span>
+    ${val}
+  </div>`;
+}
+
+function fmtFullEntryRow(key, entry, unsetLabel) {
+  const val = entry
+    ? `<span class="val">v=${entry.v}&nbsp;&nbsp;c=${entry.c ?? "—"}</span>`
+    : `<span class="val unset">${unsetLabel}</span>`;
+  return `<div class="vector-row"><span class="key">${key}</span>${val}</div>`;
+}
+
+function openVectorModal() {
+  if (!currentDetailNode || !lastData || !lastData.axis_reference) return;
+  const d = currentDetailNode.detail;
+  const ref = lastData.axis_reference;
+  const feelingsHtml = ref.feelings.map((a) => fmtFullFeelingRow(a, d.feelings[a.key])).join("");
+  const ordinancesHtml = ref.ordinances.map((k) => fmtFullEntryRow(k, d.ordinances[k], "— sem demanda —")).join("");
+  const schemasHtml = ref.schemas.map((k) => fmtFullEntryRow(k, d.schemas ? d.schemas[k] : null, "— não registrado —")).join("");
+  document.getElementById("vector-modal-body").innerHTML = `
+    <h2>${d.vov_id}</h2>
+    <div class="nature">Vetor completo — ${NATURE_LABELS[d.object_nature] || d.object_nature} · ${ref.feelings.length} Feelings, ${ref.ordinances.length} Ordenanças, ${ref.schemas.length} Schemas</div>
+    <div id="vector-columns">
+      <div><h3>Feelings (MS §3)</h3>${feelingsHtml}</div>
+      <div><h3>Ordenanças (MS §4)</h3>${ordinancesHtml}</div>
+      <div><h3>Schemas moduladores (MS §5)</h3>${schemasHtml}</div>
+    </div>
+  `;
+  document.getElementById("vector-overlay").classList.add("open");
+}
+
+function closeVectorModal() {
+  document.getElementById("vector-overlay").classList.remove("open");
 }
 
 function buildLegend(legend) {
@@ -333,6 +424,13 @@ document.getElementById("refresh-btn").addEventListener("click", () => loadGraph
 document.getElementById("back-btn").addEventListener("click", goBack);
 document.getElementById("detail-close").addEventListener("click", () => {
   document.getElementById("detail").classList.remove("open");
+});
+document.getElementById("vector-close").addEventListener("click", closeVectorModal);
+document.getElementById("vector-overlay").addEventListener("click", (e) => {
+  if (e.target.id === "vector-overlay") closeVectorModal(); // click on the dim backdrop, not the modal box itself
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeVectorModal();
 });
 
 loadGraph();
