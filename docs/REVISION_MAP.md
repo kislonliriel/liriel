@@ -4,7 +4,7 @@ Liriel is described by two families of documents, each with its **own** revision
 
 * **Reference documents** — *Volume 1 · Liriel: The Architecture of a Persistent Cognitive Instance* (narrative, `.docx`) and the two matrices,
   *MatrixObjectsValence* and *MatrixOrdinance* (`.xlsx`). They are published for human readers on kislon.ai. Master copies:
-  `Documents Control\RevNNNN\` (one folder per revision; a document that did not change in a revision is not duplicated there).
+  `Documents Control\RevNNNN\` (one folder per revision; a document that did not change in a revision is not duplicated there). Copies of the operating documents live in `Documents Control\Operating\`.
 * **Operating documents** — the *MetaScheme* (`docs/MetaScheme_Liriel_RevNNNN.md`, loaded verbatim as the model's system prompt) and
   its companion `docs/Ontology_Liriel.md`. They are published only in this repository, and change far more often.
 
@@ -16,7 +16,7 @@ The numbers are independent on purpose: coupling them would break the consecutiv
 |---|---|---|---|---|
 | Rev0000 | Rev0000 | Rev000 | 000 | Rev 0000 – Rev 0008 (all state "derived from Volume 1 Rev 0000") |
 | Rev0001 | Rev0001 (rewrite: "About this Revision", status and claims, chapters reorganized) | same as Rev0000 | same as Rev0000 | to be checked against Rev 0008 |
-| Rev0002 (planned) | Rev0002, from Rev0001 (catches up with MetaScheme Rev 0008) | Rev002 if its example rows change | same as Rev0000 unless changed | Rev 0008 |
+| Rev0002 | Rev0002, from Rev0001 (catches up with MetaScheme Rev 0008: campaign findings, safety screen, Interpellation, batch mode, Claude Code back end) | same as Rev0000 (no post-Rev0000 vocabulary in the example rows; no Rev002 issued) | same as Rev0000 | Rev 0008 |
 
 ## Operating documents
 

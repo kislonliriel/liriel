@@ -33,6 +33,8 @@ Five natures form a **mandatory core of representation** (they need not all appe
 | `Situation` | A relevant configuration or situation that can receive affective evaluation and motivate objectives. |
 | `Identity` | Records a piece of information learned, or a change incorporated into the representation of another object, preserving its origin and the circumstances of the update. |
 
+A sixth nature, outside the mandatory core, was added in Rev 0007: **`Interpellation`**, the standing demand that one Object (or a set of them, the *origin*) addresses to another (the *target*), asking it an attitude. It is neither the `Event` of its being said, nor an `Objective`, nor an `Identity` record, nor a bond; it is the demand that stays after the saying, tied to each party by a `Link_Identity_Part` bond. Its concept, structure, retrieval and verification are in **B8**.
+
 ## A3. Subjects and clusters
 
 A "subject" is **not** an object nature: it is the name of the grouping of `ScenarioData` objects related to one another. Each `ScenarioData` has its VOV; the subject, being a grouping, needs no VOV of its own. Other pertinent objects attach to these groupings through the structure of the graph. Clusters make it possible to tell subjects apart in the focus of attention and to retrieve their contexts later. **An object can take part in several subjects without being duplicated**, and separating the clusters must preserve the pertinent connections between them.
@@ -161,7 +163,7 @@ Inspect before changing; assess whether `Link_Identity_Part` already serves as t
 
 ## B3. Data schema and cycle
 
-* `mov_objects.identity_record jsonb`, `CHECK` with `'Identity'`, partial indexes by target and by relation.
+* `mov_objects.identity_record jsonb`, `CHECK` with `'Identity'` (migration 010) and, since Rev 0007, `'Interpellation'` (migration 011, see B8), partial indexes by target and by relation.
 * `mov_relations.label text not null default ''`, `strength smallint 1..5`, `unique(from,to,kind,label)`.
 * `motivation_cycles.identity_update_result jsonb` — `{cycle_id, results: [{target, kind, changes, proposals, notes}], written: [...], skipped: [{reason}]}`.
 * Cycle: … `MOV_UPDATE` (5) → `RELATIONS_UPDATE` (5A; typed bonds with `label`/`directed`/`strength`; then the placeholder bond) → `BEST_PREY_GUESS` (6) → mechanical passes → **`IDENTITY_UPDATE` (6A)** → `commit` (single transaction) → reply.
@@ -182,6 +184,7 @@ All synthetic (no real model, no network); they run from `tests/ontology/` (see 
 | Reuse of the same object in several clusters | `verify_ontology_graph.py` | One row, two subjects; the backbone does **not** merge them (fix D13); archiving one subject keeps the object another still needs and archives the exclusive ones. |
 | Preservation of `ScenarioData` | `verify_ontology_cycle.py` + older suites | PATCH refused and UPSERT over an existing one yields a new id (rule kept); `verify_cluster_fixes`, `verify_eviction_fix`, `verify_ownership_fix`, `verify_draft_db` kept passing. |
 | Compatibility | older suites, adapted | `verify_six_query_cycle`, `verify_anchor_review_cycle`, `verify_hunter_reading_cycle` pass (adjusted only for the new call); `verify_directed_fix` changed its expectation on purpose (`directed` is now written). Four older scripts (`test_airp`, `verify_meteor_cycle`, `verify_retrieval_loop`, `verify_kq10_13_cycle`) **were already failing before** (confirmed on a copy of the earlier tree) — they predate this change. |
+| The `Interpellation` nature (Rev 0007) | `verify_interpellation.py`, `verify_interpellation_cycle.py` | Nature, origin/target roles, guarding of the bonds, recall with the agent, two mocked cycles; details in B8 |
 
 **Migration 010 on the real database:** first run and rolled back inside a transaction (idempotent: runs twice), then applied; the existing data ended up with `label ''`, `directed false`, with no loss.
 
