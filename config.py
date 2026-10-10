@@ -1,0 +1,317 @@
+"""
+Central configuration, loaded from environment variables (see .env.example).
+
+Keeping every tunable in one place is what lets Phase 1 swap LLM providers
+(local Ollama vs. an external API) and DB targets without touching the rest
+of the code — only the .env file changes.
+"""
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from typing import Optional
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+def _get_bool(name: str, default: bool) -> bool:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return val.strip().lower() in {"1", "true", "yes", "on"}
+
+
+@dataclass(frozen=True)
+class Settings:
+    # --- LLM ---
+    # "llamacpp": every inference stays on the self-hosted llama-server
+    # (scripts/llamacpp/) — no closed external API sees any of Liriel's
+    # state, the original project decision (MS §17.6: weights under the
+    # implementer's control). "litellm" routes through llm_client.py/
+    # litellm instead, to any provider litellm supports via LLM_MODEL's own
+    # prefix — this fork's default, aimed at Groq (LLM_MODEL=groq/..., see
+    # .env.example) for its speed, but the same path also reaches Anthropic,
+    # OpenAI, etc. unchanged.
+    llm_backend: str
+    llamacpp_base_url: str
+    llm_model: str
+    # Model for the cycle's 3 structured-JSON calls (GRAPH_REQUEST,
+    # MOV_MAINMEMORY_UPDATE, BEST_PREY_GUESS) — separate from llm_model,
+    # which stays reserved for the 4th call (reply composition, where
+    # Liriel's actual voice/personality quality is what the user hears).
+    # Defaults to llm_model itself (no behavior change) unless set.
+    llm_model_structured: str
+    llm_api_base: Optional[str]
+    llm_temperature_update: float
+    llm_temperature_decision: float
+    llm_effort_update: str
+    llm_effort_decision: str
+    llm_effort_graph: str
+    llm_request_timeout: float
+    llm_rate_limit_retries: int
+    llm_num_ctx: int
+    # No provider default is trustworthy enough to leave unset: BEST_PREY_GUESS
+    # is the largest of the cycle's JSON outputs (the full objective block +
+    # accompanying_objectives + handoff), and a model whose reasoning tokens
+    # share the same budget as its visible output (seen on claude-haiku-4-5,
+    # unlike claude-sonnet-5) can silently truncate mid-JSON well short of
+    # what looks like a generous limit. Comfortable headroom above the
+    # largest completion measured in this project's own testing (~5.1k
+    # tokens, already truncated at that point).
+    llm_max_tokens: int
+
+    # --- Graph of Traces (MS §8) ---
+    graph_max_nodes: int
+    graph_max_nodes_boosted: int
+    graph_max_edges: int
+    graph_max_edges_boosted: int
+    identity_records_default_limit: int
+    identity_records_max: int
+    reply_max_words: int
+    graph_recency_weight: float
+
+    # --- Nested MOVs (MS §6.8) ---
+    nested_mov_max_depth: int
+
+    # --- AIRP: cluster backbone recall + multi-cluster focus (MS §6.10, §7.4) ---
+    trace_depth: int
+    memory_strength: int
+    # --- Multi-round MainMemory retrieval (MS §7.6, this session's redesign) ---
+    max_retrieval_subqueries: int
+    # --- Per-item calls: one per hunter (KQ07-09), one per Object (KQ10-13) ---
+    fanout_concurrency: int
+    # --- Batch mode (MetaScheme Rev 0008, §12.12): the per-hunter, per-Object and per-target queries asked in ONE call each.
+    # On by default only for the claude_session backend (a model strong enough to judge many items independently in one
+    # answer); LIRIEL_BATCH=1/0 overrides.
+    batch_mode: bool
+
+    # --- Telegram front end (telegram_bot.py) ---
+    telegram_bot_token: Optional[str]
+    telegram_allowed_chat_ids: frozenset[str]
+
+    # --- Voice (telegram_bot.py voice notes) ---
+    # OpenAI-only for now, called through litellm like everything else in
+    # llm_client.py — needs its own OPENAI_API_KEY in .env even when
+    # LLM_MODEL is Claude, since Anthropic has no STT/TTS endpoint.
+    stt_model: str
+    tts_model: str
+    tts_voice: str
+    # Natural-language tone steering — only gpt-4o-mini-tts honors it
+    # (ignored elsewhere via litellm.drop_params). Empty disables it.
+    tts_instructions: Optional[str]
+    # Per-reply emotional direction of the voice (llm_client.synthesize_speech's `instructions`), written by
+    # Liriel herself from her own Feelings and the reply (motivation.compose_voice_delivery). Only spent
+    # when the TTS model can be steered at all; TTS_DELIVERY=0 turns it off.
+    tts_delivery: bool
+
+    # --- Core identity (Phase 1 policy, not an MS §12 field) ---
+    protected_vov_ids: frozenset[str]
+    # Liriel's own row's vov_id — a nickname like any other since the id
+    # migration (MS §6.4), never the literal "VOV_0000" the MetaScheme's
+    # prose/examples used before that migration. motivation.py's
+    # build_reply_prompt call site looks her own row up by this, not a
+    # hardcoded string — confirmed for real: the hardcoded lookup silently
+    # returned None on every single cycle since the migration, meaning the
+    # reply-composition call never actually saw her own Ordinances/Schemas/
+    # Feelings (MS §4.7/§5/§13.6) at all.
+    liriel_self_vov_id: str
+
+    # --- Database ---
+    # Prefer the discrete PG* fields when a password contains reserved URI
+    # characters (@, :, /, ?, #, ...) — building the connection as a dict
+    # avoids the URL-encoding pitfalls of a single DATABASE_URL string.
+    database_url: Optional[str]
+    pg_host: Optional[str]
+    pg_port: int
+    pg_database: str
+    pg_user: Optional[str]
+    pg_password: Optional[str]
+
+    # --- Liriel ---
+    default_mov_id: str
+    verbose: bool
+
+    @property
+    def has_discrete_pg_config(self) -> bool:
+        return bool(self.pg_host and self.pg_user and self.pg_password)
+
+
+def _resolve_llm_backend(default: str) -> str:
+    """One-number switch for where Liriel's inference runs: LLM_PROFILE=1 is the
+    local llama-server (Gemma, scripts/llamacpp/), LLM_PROFILE=2 is an API
+    through litellm (Groq), LLM_PROFILE=3 is a Claude session answering the
+    cycle's requests through a folder (claude_session_client.py, no model API
+    and no local server). When LLM_PROFILE is unset, LLM_BACKEND
+    (llamacpp | litellm | claude_session) decides, exactly as before."""
+    profile = os.getenv("LLM_PROFILE", "").strip()
+    if not profile:
+        return os.getenv("LLM_BACKEND", default)
+    backends = {"1": "llamacpp", "2": "litellm", "3": "claude_session"}
+    if profile not in backends:
+        raise ValueError(f"LLM_PROFILE must be 1 (local llama-server), 2 (API via litellm) or 3 (Claude session); got {profile!r}")
+    return backends[profile]
+
+
+def load_settings() -> Settings:
+    _llm_model = os.getenv("LLM_MODEL", "groq/llama-3.3-70b-versatile")
+    return Settings(
+        llm_backend=_resolve_llm_backend("litellm"),
+        llamacpp_base_url=os.getenv("LLAMACPP_BASE_URL", "http://localhost:8080"),
+        llm_model=_llm_model,
+        # Defaults to llm_model itself — set LLM_MODEL_STRUCTURED explicitly
+        # to route the 3 structured-JSON calls to a cheaper model (e.g. a
+        # Claude Haiku) while LLM_MODEL keeps doing the reply-composition
+        # call, where Liriel's voice/personality quality is what shows.
+        llm_model_structured=os.getenv("LLM_MODEL_STRUCTURED") or _llm_model,
+        llm_api_base=os.getenv("LLM_API_BASE") or None,
+        llm_temperature_update=float(os.getenv("LLM_TEMPERATURE_UPDATE", "0.3")),
+        llm_temperature_decision=float(os.getenv("LLM_TEMPERATURE_DECISION", "0.7")),
+        # Anthropic-only (ignored elsewhere via litellm.drop_params): current
+        # Claude models run extended thinking on by default, which measured
+        # ~87s and ~8.7k mostly-invisible reasoning tokens per call against
+        # this MetaScheme-sized prompt. "low" measured 8-18s on the same
+        # prompts with no loss of schema validity or reasoning quality in
+        # testing — both JSON-extraction queries, so default to it there.
+        # Reply composition (Phase 1's third call) is plain text, already
+        # fast (~3s) and more sensitive to warmth than these two, so it's
+        # left at the provider default rather than tuned here.
+        llm_effort_update=os.getenv("LLM_EFFORT_UPDATE", "low"),
+        llm_effort_decision=os.getenv("LLM_EFFORT_DECISION", "low"),
+        # Query 1 (GRAPH_REQUEST, MS §12.1) is the same kind of structured-
+        # JSON extraction task as Query 2 — deciding which ids to survey,
+        # not the central judgment — so it defaults to the same low effort.
+        llm_effort_graph=os.getenv("LLM_EFFORT_GRAPH", "low"),
+        # 120s (fine for the short prompt this replaced) isn't enough once
+        # a call routinely carries the ~18.7k-token MetaScheme plus a MOV
+        # and produces a couple thousand completion tokens — that alone
+        # measured well over two minutes on a local 26B model.
+        llm_request_timeout=float(os.getenv("LLM_REQUEST_TIMEOUT", "600")),
+        # A provider's tokens-per-minute limit is routine once a cycle makes dozens
+        # of calls (every one carries the whole MetaScheme): llm_client waits out
+        # the delay the provider names and retries, this many times, before giving
+        # up and letting the cycle fail.
+        llm_rate_limit_retries=max(0, int(os.getenv("LLM_RATE_LIMIT_RETRIES", "8"))),
+        # The official MetaScheme alone is ~18.7k tokens (docs/MetaScheme_
+        # Liriel_Rev0000.md, MS §0.6's own estimate), resident on every call
+        # — plus the MOV and the response JSON schema. 8192 (fine for the
+        # Phase-1-only summary this replaced) is nowhere near enough now.
+        llm_num_ctx=int(os.getenv("LLM_NUM_CTX", "40960")),
+        llm_max_tokens=int(os.getenv("LLM_MAX_TOKENS", "8192")),
+        database_url=os.getenv("DATABASE_URL") or None,
+        pg_host=os.getenv("PGHOST") or None,
+        pg_port=int(os.getenv("PGPORT", "5432")),
+        pg_database=os.getenv("PGDATABASE", "postgres"),
+        pg_user=os.getenv("PGUSER") or None,
+        pg_password=os.getenv("PGPASSWORD") or None,
+        default_mov_id=os.getenv("DEFAULT_MOV_ID", "MOV_DEFAULT"),
+        verbose=_get_bool("LIRIEL_VERBOSE", False),
+        # graph_service.py: the max archived Objects one GRAPH_REQUEST item
+        # admits into the Graph of Traces, ranked by (emotional charge,
+        # recency) — MS §8/§7 leave the size to the implementation. The
+        # _boosted variant applies only when the model sets
+        # deep_recall_requested on that request (user explicitly insisted
+        # Liriel try hard to remember something) — nothing persists after,
+        # the next cycle's request just doesn't set the flag.
+        graph_max_nodes=int(os.getenv("GRAPH_MAX_NODES", "12")),
+        graph_max_nodes_boosted=int(os.getenv("GRAPH_MAX_NODES_BOOSTED", "40")),
+        # Rev 0006 (ontology §10): volume limits for selective retrieval. A graph
+        # never carries more than this many bonds (the relevant ones first —
+        # relevance and strength are different criteria, a weak bond can be
+        # decisive), and an Identity-record request never returns more than
+        # `identity_records_max`, defaulting to `identity_records_default_limit`.
+        graph_max_edges=int(os.getenv("GRAPH_MAX_EDGES", "60")),
+        graph_max_edges_boosted=int(os.getenv("GRAPH_MAX_EDGES_BOOSTED", "150")),
+        identity_records_default_limit=int(os.getenv("IDENTITY_RECORDS_DEFAULT_LIMIT", "5")),
+        identity_records_max=int(os.getenv("IDENTITY_RECORDS_MAX", "20")),
+        # Limit on the WORDS of Liriel's text reply (the Phase-1 reply bridge, motivation.py).
+        # 0 = no limit (the default). Asked for in the reply prompt first; whatever still
+        # comes back over the limit is cut at the last complete sentence. It shortens the
+        # reply, not the cycle: the reply is a few seconds of a cycle that takes minutes.
+        reply_max_words=max(0, int(os.getenv("REPLY_MAX_WORDS", "0"))),
+        # Weight of the recency factor (in [0,1], see graph_service._recency_
+        # factor) relative to raw emotional charge (typically a few units
+        # per axis) when ranking archived candidates. Charge dominates by
+        # design (MS §7: "organized by affective weight, not by recency");
+        # this just lets recency break ties and nudge close calls.
+        graph_recency_weight=float(os.getenv("GRAPH_RECENCY_WEIGHT", "2.0")),
+        # MS §6.8 rule (d): "human adults sustain four or five orders before
+        # performance breaks down... do not nest deeper than the QUERY
+        # authorizes." This is that authorization for Phase 1/2 — how many
+        # levels of nested MOV motivation.py will gather into the prompt.
+        # Creating a deeper one is still possible; it just won't be shown
+        # back to the model, so there's no incentive to keep populating it.
+        nested_mov_max_depth=int(os.getenv("NESTED_MOV_MAX_DEPTH", "2")),
+        # MS §7.4. How far a cluster recall reaches once its ScenarioData
+        # backbone (§6.10) has been found: 0 = just the matched principal
+        # object, 1 = the whole backbone, 2 = backbone + one hop from the
+        # principal, 3 = backbone + one hop from every backbone object, 4+ =
+        # backbone + one more hop from every backbone object per step up.
+        # Default 1 (whole backbone, no further neighbors) — enough to
+        # recognize a topic again without pulling in everything it ever
+        # touched.
+        trace_depth=int(os.getenv("TRACE_DEPTH", "1")),
+        # MS §7.4. How many clusters may hold the focus at once before the
+        # oldest is filed to MainMemory to make room for a forming one.
+        # Default 2 — one standing matter plus one newly arriving, the
+        # common case of a conversation in transition between topics.
+        memory_strength=int(os.getenv("MEMORY_STRENGTH", "2")),
+        # MS §7.6. How many rounds one cycle's own Query 2
+        # (MOV_MAINMEMORY_UPDATE) may run before it must settle for
+        # whatever it has retrieved — distinct from memory_strength, which
+        # governs how many clusters stay in FOCUS across cycles, not how
+        # many retrieval rounds one cycle's own query may take. Default 3:
+        # one initial pass plus up to two extra rounds when the model sets
+        # retrieval_satisfied=false.
+        max_retrieval_subqueries=int(os.getenv("MAX_RETRIEVAL_SUBQUERIES", "3")),
+        # How many of a cycle's independent per-item calls — one per hunter
+        # (HUNTER_READING, KQ07-09) and one per Object (ANCHOR_REVIEW, KQ10-13) —
+        # may be in flight at once. Each reads only the shared scene artifacts and
+        # its own row, so this is purely a latency/rate-limit knob: 1 runs them one
+        # after another, the safe default against provider rate limits.
+        fanout_concurrency=max(1, int(os.getenv("FANOUT_CONCURRENCY", "1"))),
+        batch_mode=(
+            os.getenv("LIRIEL_BATCH", "").strip() != "0"
+            if os.getenv("LIRIEL_BATCH", "").strip() else _resolve_llm_backend("litellm") == "claude_session"
+        ),
+        # From @BotFather (/newbot). Only telegram_bot.py reads this — the
+        # terminal chat (main.py) doesn't need it.
+        telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN") or None,
+        # Locks the bot to specific Telegram chats so a stranger who finds
+        # its username can't drive Liriel's MOV. Comma-separated for more
+        # than one person (e.g. "111111111,222222222"). Required:
+        # telegram_bot.py refuses to start while it is empty
+        # (`python telegram_bot.py --whoami` shows your chat_id).
+        telegram_allowed_chat_ids=frozenset(
+            v.strip() for v in os.getenv("TELEGRAM_ALLOWED_CHAT_ID", "").split(",") if v.strip()
+        ),
+        # Whisper (speech-to-text) for incoming Telegram voice notes.
+        stt_model=os.getenv("STT_MODEL", "whisper-1"),
+        # OpenAI TTS (text-to-speech) for the spoken reply. response_format
+        # is fixed to "opus" in llm_client.py — that's Ogg/Opus, the exact
+        # container Telegram's own voice notes use, so no ffmpeg conversion
+        # is needed on the way back out.
+        tts_model=os.getenv("TTS_MODEL", "tts-1"),
+        # One of alloy/echo/fable/onyx/nova/shimmer (tts-1) — nova reads as
+        # warm/clear in both English and Portuguese in OpenAI's own samples.
+        tts_voice=os.getenv("TTS_VOICE", "nova"),
+        tts_instructions=os.getenv("TTS_INSTRUCTIONS") or None,
+        tts_delivery=os.getenv("TTS_DELIVERY", "1").strip() != "0",
+        # Core identity: who Liriel is (VOV_0000) and who made her (her
+        # creator VOV_0001, her developer VOV_0002) — unlike every other
+        # Object, MS §7's focus/archive cycle must never apply to these.
+        # Losing them from the MOV isn't "forgetting a case detail", it's
+        # losing who she is. Everything else (the ongoing story, live-chat
+        # Objects) archives and is retrieved via the Graph of Traces as
+        # normal. Comma-separated; blank disables the guard entirely.
+        protected_vov_ids=frozenset(
+            v.strip() for v in os.getenv(
+                "PROTECTED_VOV_IDS", "VOV_0000,VOV_0001,VOV_0002"
+            ).split(",") if v.strip()
+        ),
+        liriel_self_vov_id=os.getenv("LIRIEL_SELF_VOV_ID", "PCI_Liriel_Self"),
+    )
+
+
+settings = load_settings()

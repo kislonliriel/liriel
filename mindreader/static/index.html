@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="en-US">
+<head>
+<meta charset="UTF-8">
+<title>LirielMindReader</title>
+<script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
+<style>
+  :root {
+    --bg: #14161c;
+    --panel: #1c1f28;
+    --panel-border: #2c303c;
+    --text: #d8dee8;
+    --text-dim: #8b93a3;
+    --accent: #f5c518;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: "Segoe UI", system-ui, sans-serif;
+    overflow: hidden;
+  }
+  #topbar {
+    position: fixed; top: 0; left: 0; right: 0; height: 56px;
+    background: var(--panel); border-bottom: 1px solid var(--panel-border);
+    display: flex; align-items: center; padding: 0 18px; gap: 16px;
+    z-index: 10;
+  }
+  #topbar h1 { font-size: 16px; margin: 0; font-weight: 600; color: var(--text); }
+  #topbar .mov-id { font-size: 12px; color: var(--text-dim); }
+  #topbar button {
+    background: var(--accent); color: #2a2000; border: none;
+    padding: 7px 14px; border-radius: 6px; font-weight: 600; cursor: pointer;
+    font-size: 13px;
+  }
+  #topbar button:hover { filter: brightness(1.08); }
+  #topbar #back-btn { background: transparent; color: var(--text); border: 1px solid var(--panel-border); }
+  #topbar .status { font-size: 12px; color: var(--text-dim); margin-left: auto; }
+  #graph { position: fixed; top: 56px; left: 0; right: 0; bottom: 0; }
+
+  #legend {
+    position: fixed; bottom: 16px; left: 16px; z-index: 10;
+    background: var(--panel); border: 1px solid var(--panel-border);
+    border-radius: 10px; padding: 10px 14px; font-size: 12px;
+    max-width: 220px;
+  }
+  #legend h3 { margin: 0 0 8px; font-size: 12px; color: var(--text-dim); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  #legend .row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+  #legend .swatch { width: 11px; height: 11px; border-radius: 50%; flex: none; }
+  #legend .swatch.objective { border: 2px solid #fff2b8; width: 9px; height: 9px; }
+  #legend .note { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--panel-border); color: var(--text-dim); line-height: 1.6; }
+  #legend .ring-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #90a4ae; vertical-align: middle; margin-right: 4px; }
+  #legend .ring-dot.neg { border: 2px solid #e05252; }
+  #legend .ring-dot.pos { border: 2px solid #4caf7d; }
+
+  #detail {
+    position: fixed; top: 56px; right: 0; bottom: 0; width: 320px;
+    background: var(--panel); border-left: 1px solid var(--panel-border);
+    padding: 18px; overflow-y: auto; transform: translateX(100%);
+    transition: transform .18s ease; z-index: 10;
+  }
+  #detail.open { transform: translateX(0); }
+  #detail h2 { margin: 0 0 4px; font-size: 18px; color: var(--accent); }
+  #detail .nature { font-size: 12px; color: var(--text-dim); margin-bottom: 14px; }
+  #detail .field { margin-bottom: 12px; }
+  #detail .field label { display: block; font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 2px; }
+  #detail .field .val { font-size: 13px; line-height: 1.4; }
+  #detail .axis-row { display: flex; justify-content: space-between; font-size: 12px; padding: 2px 0; border-bottom: 1px dotted var(--panel-border); }
+  #detail .close { position: absolute; top: 14px; right: 14px; cursor: pointer; color: var(--text-dim); font-size: 18px; background: none; border: none; }
+  #detail .close:hover { color: var(--text); }
+  #detail .nested-link {
+    background: rgba(245,197,24,0.12); color: var(--accent); border: 1px solid rgba(245,197,24,0.4);
+    padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600;
+  }
+  #detail .nested-link:hover { background: rgba(245,197,24,0.22); }
+  #detail .vector-link {
+    display: inline-block; margin-bottom: 14px;
+    background: rgba(90,169,230,0.12); color: #5aa9e6; border: 1px solid rgba(90,169,230,0.4);
+    padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600;
+  }
+  #detail .vector-link:hover { background: rgba(90,169,230,0.22); }
+
+  #empty-msg {
+    position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    color: var(--text-dim); font-size: 15px; flex-direction: column; gap: 10px;
+  }
+
+  /* Full-vector modal (all 14 Feelings, all Ordinances, all Schemas — not
+     just the axes a row happens to have charged). A separate overlay
+     rather than stretching #detail: the point is to see the WHOLE vector
+     at once, side by side, which needs more width than the 320px side
+     panel gives. */
+  #vector-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 20;
+    display: none; align-items: center; justify-content: center;
+  }
+  #vector-overlay.open { display: flex; }
+  #vector-modal {
+    background: var(--panel); border: 1px solid var(--panel-border); border-radius: 12px;
+    width: min(900px, 92vw); max-height: 86vh; overflow-y: auto; padding: 22px 26px;
+    position: relative;
+  }
+  #vector-modal h2 { margin: 0 2px 2px; font-size: 18px; color: var(--accent); }
+  #vector-modal .nature { font-size: 12px; color: var(--text-dim); margin: 0 2px 16px; }
+  #vector-modal .close { position: absolute; top: 16px; right: 18px; cursor: pointer; color: var(--text-dim); font-size: 20px; background: none; border: none; }
+  #vector-modal .close:hover { color: var(--text); }
+  #vector-columns { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; }
+  #vector-columns h3 { font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; margin: 0 0 8px; border-bottom: 1px solid var(--panel-border); padding-bottom: 6px; }
+  .vector-row { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; padding: 3px 0; border-bottom: 1px dotted var(--panel-border); }
+  .vector-row .key { color: var(--text); }
+  .vector-row .pole { color: var(--text-dim); font-size: 10px; display: block; }
+  .vector-row .val { color: var(--text); white-space: nowrap; }
+  .vector-row .val.unset { color: var(--text-dim); font-style: italic; }
+  /* The row's HEADER (MS §6.4): every field that is not the feelings/ordinances/schemas vector. */
+  #vector-header { margin: 0 0 20px; }
+  #vector-header h3 { font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; margin: 0 0 8px; border-bottom: 1px solid var(--panel-border); padding-bottom: 6px; }
+  #vector-header .hdr-grid { display: grid; grid-template-columns: 170px 1fr; gap: 0 14px; font-size: 12px; }
+  #vector-header .hdr-key { color: var(--text-dim); padding: 4px 0; border-bottom: 1px dotted var(--panel-border); font-family: ui-monospace, Consolas, monospace; }
+  #vector-header .hdr-val { color: var(--text); padding: 4px 0; border-bottom: 1px dotted var(--panel-border); overflow-wrap: anywhere; white-space: pre-wrap; }
+  #vector-header .hdr-val.unset { color: var(--text-dim); font-style: italic; }
+  @media (max-width: 760px) { #vector-columns { grid-template-columns: 1fr; } #vector-header .hdr-grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <h1>🧠 LirielMindReader</h1>
+  <button id="back-btn" style="display:none;">← Back</button>
+  <span class="mov-id" id="mov-id-label"></span>
+  <button id="refresh-btn">↻ Refresh</button>
+  <span class="status" id="status-label"></span>
+</div>
+
+<div id="graph"></div>
+
+<div id="empty-msg">
+  <div>No active Object in the MOV right now.</div>
+</div>
+
+<div id="legend">
+  <h3>Object nature</h3>
+  <div id="legend-rows"></div>
+  <div class="note">
+    <span class="ring-dot neg"></span> strong negative valence (v ≤ −3)
+    <br><span class="ring-dot pos"></span> strong positive valence (v ≥ +3)
+    <br>size = intensity of the dominant valence (except ◆ AIRP, numbered by order of creation within its subject: restarts at 1 with each new subject)
+  </div>
+</div>
+
+<div id="detail">
+  <button class="close" id="detail-close">✕</button>
+  <div id="detail-body"></div>
+</div>
+
+<div id="vector-overlay">
+  <div id="vector-modal">
+    <button class="close" id="vector-close">✕</button>
+    <div id="vector-modal-body"></div>
+  </div>
+</div>
+
+<script>
+const NATURE_LABELS = {
+  PCI: "PCI (cognitive instance)",
+  // "Sentient" replaces "Person" (MS §6.4) — older rows in the database may
+  // still literally say "Person" (never force-migrated), so both labels
+  // coexist.
+  Person: "Person", Sentient: "Person/Sentient being", Objective: "★ Objective (priority)",
+  Situation: "Situation", Thing: "Thing", Idea: "Idea", Event: "Event", Memory: "Memory",
+  Group: "Group", Animal: "Animal", Entity: "Entity", Attribute: "Attribute", "Self-Process": "Self-process",
+  ScenarioData: "◆ Cluster backbone (AIRP)",
+  Identity: "📜 Identity record (what was learned)",
+  Interpellation: "🗣 Interpellation (a demand from an origin on a target)",
+};
+
+let network = null;
+let lastData = null;
+let currentMovId = null;
+let movStack = []; // parent mov_ids visited on the way to the one shown now
+let currentDetailNode = null; // whichever node's #detail panel is open right now -- read by openVectorModal
+
+function fmtAxes(map) {
+  const entries = Object.entries(map || {});
+  if (!entries.length) return "<span style='color:var(--text-dim)'>— no charged axis —</span>";
+  return entries.map(([k, e]) =>
+    `<div class="axis-row"><span>${k}</span><span>v=${e.v}&nbsp;&nbsp;c=${e.c}</span></div>`
+  ).join("");
+}
+
+// MS §9.4/§12.5's ordinances_read/schemas_read has appeared in several
+// shapes in this codebase's own worked examples — {"ArchetypeAnimaAnimus":
+// {"v":..,"c":..}} (nested), {"ordinance":"ArchetypeAnimaAnimus","v":..,
+// "c":..} (flat, ordinances_read), {"schema":"CharacterEmpathy","v":..,
+// "c":..} (flat, schemas_read) — tolerant of any of these rather than
+// assuming one, since the key name itself ("ordinance" vs "schema") is
+// the only thing that differs between the two fields' own flat shape.
+function fmtOrdinanceEntry(entry) {
+  if (!entry || typeof entry !== "object") return "";
+  const nameKey = ("ordinance" in entry) ? "ordinance" : ("schema" in entry) ? "schema" : null;
+  if (nameKey) {
+    return `${entry[nameKey]}: ${entry.v}${entry.c != null ? " (c=" + entry.c + ")" : ""}`;
+  }
+  const [key, val] = Object.entries(entry)[0] || [null, null];
+  if (!key) return "";
+  if (val && typeof val === "object") {
+    return `${key}: ${val.v}${val.c != null ? " (c=" + val.c + ")" : ""}`;
+  }
+  return `${key}: ${val}`;
+}
+
+// A labeled Q&A row for the Key Questions block below — the question text
+// is fixed (MS §9.4/§12.1/§12.3's own KQ numbering), the answer is always
+// whatever the model actually wrote for it, so a generic/evasive answer
+// reads as exactly that rather than being smoothed over.
+function fmtKQRow(label, question, answerHtml) {
+  return `<div style="margin-bottom:10px;">
+    <div style="color:var(--text-dim);font-size:11px;"><b>${label}</b> — ${question}</div>
+    <div style="margin-top:2px;">${answerHtml}</div>
+  </div>`;
+}
+
+function fmtElementEntry(el) {
+  const name = el.vov_id || el.provisional_label || "?";
+  const tags = [el.object_nature, el.new_this_cycle ? "new this cycle" : null].filter(Boolean).join(", ");
+  return `${name}${tags ? ` (${tags})` : ""}`;
+}
+
+// KQ10-13 entries: {vov_id, axis|schema_name, v, c, reason} plus
+// mov_id on the nested_* variants — nameKey picks "axis" vs "schema_name"
+// since Feelings/Schemas updates are otherwise the same shape.
+function fmtUpdateEntry(entry, nameKey) {
+  const where = entry.mov_id ? ` [${entry.mov_id}]` : "";
+  const cPart = entry.c != null ? ` (c=${entry.c})` : "";
+  const reasonPart = entry.reason ? ` — ${entry.reason}` : "";
+  return `<b>${entry.vov_id}</b>${where}: ${entry[nameKey]} = ${entry.v}${cPart}${reasonPart}`;
+}
+
+// KQ10-13 are answered once PER OBJECT (ANCHOR_REVIEW, MS §12.3B) — `reviews`
+// is every review of the cycle, each tagged `nested`. Shows how many Objects
+// were reviewed at this level and, for each one that changed, the new
+// valence and the model's own reason ("[] = reviewed, nothing changes" is
+// itself an answer, so the count is always shown).
+function fmtReviewKQ(reviews, nested, field, nameKey, dim) {
+  if (!reviews) return dim("not answered — this cycle predates the per-Object ANCHOR_REVIEW");
+  const level = reviews.filter(r => !!r.nested === nested);
+  if (!level.length) return dim(nested ? "no Object in a nested MOV was reviewed" : "no Object was reviewed");
+  const changed = level.filter(r => (r[field] || []).length);
+  const head = dim(`${level.length} Object(s) reviewed, ${changed.length} with changes`);
+  const rows = changed.flatMap(r => r[field].map(c =>
+    `<div style="margin-bottom:4px;">${fmtUpdateEntry({...c, vov_id: r.vov_id, mov_id: nested ? r.mov_id : null}, nameKey)}</div>`
+  )).join("");
+  const missing = level.filter(r => r.missing_cause && field === "feelings_changes").map(r =>
+    `<div style="margin-bottom:4px;">⚠ <b>${r.vov_id}</b> flagged a cause not on record: ${r.missing_cause}</div>`
+  ).join("");
+  return head + rows + missing;
+}
+
+// In the MetaScheme's own working language, like the rest of the UI. Shown for every ScenarioData node
+// unconditionally, even when no cycle has related to it yet (the
+// placeholder is itself the answer, not something to hide). Covers every
+// one of MS §9.4's Key Questions (KQ01-08), sourced from whichever cycle's
+// Best-Prey Guess or accompanying objectives actually related to this
+// cluster (SCENE_SUBJECT_CHECK's KQ01/02 and TACTICAL_SCENE_INTERPRETATION's
+// KQ03-08, joined by that cycle's own cycle_id) — so you can check whether
+// the model is really answering each question, or just restating the
+// scenario text back ("intelligent parrot" behavior).
+function fmtKeyQuestions(info) {
+  const check = info && info.scene_subject_check;
+  const scene = info && info.current_tactical_scene;
+  if (!check && !scene) {
+    return `<span style="color:var(--text-dim)">No Key Questions answered yet for this matter — no cycle's Best-Prey Guess or accompanying objectives have related to it so far.</span>`;
+  }
+  const dim = (s) => `<span style="color:var(--text-dim)">${s}</span>`;
+  const rows = [];
+
+  if (check) {
+    rows.push(fmtKQRow("Step 1", "Is this a new matter, or a continuation of one already in focus?",
+      check.is_new_subject ? "New matter" : `Continuation${check.continuing_scenario_data_id ? " of " + check.continuing_scenario_data_id : ""}`));
+    const elements = check.elements || [];
+    rows.push(fmtKQRow("KQ01", "What are the Savanna's main elements?",
+      elements.length ? elements.map(fmtElementEntry).join("<br>") : dim("none recorded")));
+    const hunterEls = elements.filter(e => e.is_hunter);
+    rows.push(fmtKQRow("KQ02", "Which of those elements are hunters?",
+      hunterEls.length ? hunterEls.map(fmtElementEntry).join("<br>") : dim("none recorded")));
+  }
+
+  if (scene) {
+    const board = scene.board || {};
+    rows.push(fmtKQRow("KQ03", "What are the relevant relations?", scene.relations_summary || dim("not answered")));
+    rows.push(fmtKQRow("KQ04", "What are the space conditions?", board.space || dim("not answered")));
+    rows.push(fmtKQRow("KQ05", "What are the time conditions?", board.time || dim("not answered")));
+    rows.push(fmtKQRow("KQ06", "What are the symbolic conditions?", board.symbolic || dim("not answered")));
+    const hunters = scene.hunters || [];
+    const ordsHtml = hunters.length
+      ? hunters.map(h => {
+          const ords = (h.ordinances_read || []).map(fmtOrdinanceEntry).filter(Boolean);
+          return `<div style="margin-bottom:4px;"><b>${h.vov_id_or_label || h.vov_id}</b>: ${ords.length ? ords.join(", ") : dim("none recorded")}</div>`;
+        }).join("")
+      : dim("no hunters recorded");
+    rows.push(fmtKQRow("KQ07", "What Ordinances is each hunter reading?", ordsHtml));
+    const schemasHtml = hunters.length
+      ? hunters.map(h => {
+          const schemas = (h.schemas_read || []).map(fmtOrdinanceEntry).filter(Boolean);
+          return `<div style="margin-bottom:4px;"><b>${h.vov_id_or_label || h.vov_id}</b>: ${schemas.length ? schemas.join(", ") : dim("none recorded")}</div>`;
+        }).join("")
+      : dim("no hunters recorded");
+    rows.push(fmtKQRow("KQ08", "What Schemas is each hunter reading?", schemasHtml));
+    const movHtml = hunters.length
+      ? hunters.map(h =>
+          `<div style="margin-bottom:2px;"><b>${h.vov_id_or_label || h.vov_id}</b>: ${h.needs_own_mov ? "needs own nested MOV" : "no"}</div>`
+        ).join("")
+      : dim("no hunters recorded");
+    rows.push(fmtKQRow("KQ09", "Which hunters without their own nested MOV need one?", movHtml));
+    rows.push(fmtKQRow("KQ10", "Which Feelings anchored on each Object in Liriel's own MOV need updating? (one review per Object)",
+      fmtReviewKQ(info.anchor_reviews, false, "feelings_changes", "axis", dim)));
+    rows.push(fmtKQRow("KQ11", "Which Feelings anchored on each Object in nested MOVs need updating? (one review per Object)",
+      fmtReviewKQ(info.anchor_reviews, true, "feelings_changes", "axis", dim)));
+    rows.push(fmtKQRow("KQ12", "Which Modulating Schemas anchored on each Object in Liriel's own MOV need updating?",
+      fmtReviewKQ(info.anchor_reviews, false, "schemas_changes", "schema_name", dim)));
+    rows.push(fmtKQRow("KQ13", "Which Modulating Schemas anchored on each Object in nested MOVs need updating?",
+      fmtReviewKQ(info.anchor_reviews, true, "schemas_changes", "schema_name", dim)));
+  }
+
+  return rows.join("");
+}
+
+// One bond (MS §8.9): its category, label, direction, strength, wording — and, on request, the records of
+// how it changed (the specific relation, by its own id: two Objects may share several).
+function renderEdgeDetail(edge) {
+  currentDetailNode = null;
+  const d = edge.detail;
+  const body = document.getElementById("detail-body");
+  const aff = (d.affective || []).map((e) => `${esc(e.axis)} ${e.v >= 0 ? "+" : ""}${e.v}`).join(", ");
+  body.innerHTML = `
+    <h2>${esc(d.from)} ${d.directed ? "→" : "↔"} ${esc(d.to)}</h2>
+    <div class="nature">${esc(d.kind_label)}${d.label ? " · " + esc(d.label) : ""} (${esc(d.kind)})</div>
+    <div class="field"><label>Bond text</label><div class="val">${esc(d.propositional) || "—"}</div></div>
+    <div class="field"><label>Direction</label><div class="val">${d.directed ? "directed — read from " + esc(d.from) + " to " + esc(d.to) : "mutual — reads the same from both sides"}</div></div>
+    ${aff ? `<div class="field"><label>Emotional charge</label><div class="val">${aff}</div></div>` : ""}
+    <div class="field"><label>Strength / confidence / since</label><div class="val">${d.strength != null ? d.strength + "/5" : "—"} · ${d.confidence != null ? d.confidence + "/5" : "—"} · ${esc(d.since) || "—"}</div></div>
+    ${d.identity_index && d.identity_index.count ? `<div class="field"><label>Change records of this bond</label><div class="val">
+      ${fmtIdentityIndex(d.identity_index)}<br>
+      <button class="vector-link" onclick="loadIdentityRecords('relation_id=${encodeURIComponent(edge.relation_id)}', 'identity-records')">📜 Show records</button>
+      <div id="identity-records"></div></div></div>` : ""}
+  `;
+  document.getElementById("detail").classList.add("open");
+}
+
+function renderDetail(node) {
+  currentDetailNode = node; // read by openVectorModal below
+  const d = node.detail;
+  const body = document.getElementById("detail-body");
+  let objectiveHtml = "";
+  if (d.objective) {
+    const o = d.objective;
+    objectiveHtml = `
+      <div class="field"><label>Objective (MS §10.6)</label><div class="val">
+        ${o.genus}${o.species ? " / " + o.species : ""} — ${o.gain_form}<br>
+        status: ${o.status} · cycles open: ${o.cycles_open}<br>
+        channels: ${(o.channel_ordinances || []).join(", ") || "—"}
+      </div></div>`;
+  }
+  // MS §11.2's "point of departure" for ProcessCommandControl — the
+  // handoff never lives on the VOV row itself, only in the cycle that
+  // actually elected this Objective as best_prey_guess (mindreader/app.py
+  // _latest_bpg_info). This is the ONLY content the reply is allowed to
+  // draw on beyond the MOV/GraphOfTraces (MS §11's rule of ownership) —
+  // showing it here is what lets you check the reply against it.
+  let bpgHtml = "";
+  if (d.last_elected_as_bpg) {
+    const b = d.last_elected_as_bpg;
+    const h = b.handoff_to_processcommandcontrol || {};
+    const list = (arr) => (arr && arr.length) ? `<ul>${arr.map(x => `<li>${x}</li>`).join("")}</ul>` : "—";
+    // MS §11.2's rule of ownership, made checkable: the reply below is
+    // supposed to trace ONLY to the handoff that follows it (or the
+    // MOV/GraphOfTraces), never to raw ScenarioData. Showing the full,
+    // actual text — not a summary — is what lets that be verified against
+    // real data instead of taken on trust.
+    bpgHtml = `
+      <div class="field"><label>Reply sent in this cycle (full text, MS §11 — ProcessCommandControl)</label><div class="val" style="white-space:pre-wrap;">${b.response_text || "— no reply recorded for this cycle —"}</div></div>
+      <div class="field"><label>Handoff to ProcessCommandControl (MS §12.5 — elected BPG in ${b.cycle_id || "?"})</label><div class="val">
+        <b>Why now:</b> ${h.why_now || "—"}<br>
+        <b>Objective summary:</b> ${h.objective_summary || "—"}<br>
+        <b>Expected gains:</b> ${h.expected_gains_summary || "—"}<br>
+        <b>Information needed:</b> ${list(h.information_needed)}
+        <b>Constraints:</b> ${list(h.constraints)}
+        <b>Success criteria:</b> ${list(h.success_criteria)}
+        <b>Failure criteria:</b> ${list(h.failure_criteria)}
+        <b>Report back:</b> ${list(h.report_back)}
+        ${b.notes ? `<b>Query 3 notes:</b> ${b.notes}<br>` : ""}
+      </div></div>`;
+  }
+  // Requested to always appear on a ScenarioData node's own panel (MS §9.4: "the Objects with
+  // affective weight for the player... can carry as much importance as
+  // the player itself" — who's in the scene and what's driving them,
+  // right alongside the matter itself). Covers every Key Question
+  // (KQ01-08, MS §12.1/§12.3) with the model's own actual answer, not
+  // just the hunters/Ordinances subset shown before.
+  const tacticalHtml = d.object_nature === "ScenarioData"
+    ? `<div class="field"><label>Key Questions (MS §9.4/§12.1/§12.3)</label><div class="val">
+         ${fmtKeyQuestions(d.scenario_tactical_scene)}
+       </div></div>`
+    : "";
+  // Rev 0006 (MS §6.13): the records of what was learned about this Object stay out of the graph;
+  // the node only says whether a history exists, and the button below loads it (bounded).
+  let identityHtml = "";
+  if (d.identity_record) {
+    identityHtml = `<div class="field"><label>Identity record (MS §6.13)</label><div class="val">${fmtIdentityRecord({ ...d.identity_record, relation: d.identity_record.relation && { from: d.identity_record.relation.from_vov_id, to: d.identity_record.relation.to_vov_id, kind: d.identity_record.relation.kind, label: d.identity_record.relation.label } })}</div></div>`;
+  } else if (d.identity_index && d.identity_index.count) {
+    identityHtml = `<div class="field"><label>Identity records (MS §6.13)</label><div class="val">
+      ${fmtIdentityIndex(d.identity_index)}<br>
+      <button class="vector-link" onclick="loadIdentityRecords('vov_id=${encodeURIComponent(d.vov_id)}', 'identity-records')">📜 Show records (newest first)</button>
+      <div id="identity-records"></div></div></div>`;
+  }
+  // Rev 0007 AZ (MS §6.14): an Interpellation sits between its parties -- who makes the demand (origin) and who it is made of (target),
+  // read from the Identity bonds that run from it to each party (the bond's label is the role).
+  let interpHtml = "";
+  if (d.object_nature === "Interpellation" && lastData && lastData.edges) {
+    const parties = (role) => lastData.edges
+      .filter((e) => e.detail && e.detail.kind === "Link_Identity_Part" && e.from === d.vov_id && e.detail.label === role)
+      .map((e) => esc(e.to));
+    const fmtParties = (list) => (list.length ? list.join(", ") : "— none recorded —");
+    interpHtml = `<div class="field"><label>Interpellation (MS §6.14)</label><div class="val">
+      <b>Origin</b> (who makes the demand): ${fmtParties(parties("origin"))}<br>
+      <b>Target</b> (of whom an attitude is demanded): ${fmtParties(parties("target"))}</div></div>`;
+  }
+  body.innerHTML = `
+    <h2>${d.vov_id}</h2>
+    <div class="nature">${NATURE_LABELS[d.object_nature] || d.object_nature}${d.priority ? " · priority " + d.priority : ""}${d.scenario_seq ? " · #" + d.scenario_seq + " in subject" + (d.scenario_subject && d.scenario_subject !== d.vov_id ? " of " + d.scenario_subject : "") : ""}</div>
+    <button class="vector-link" onclick="openVectorModal()">📊 Show full vector (every dimension)</button>
+    <div class="field"><label>Description</label><div class="val">${d.brief_description || "—"}</div></div>
+    ${d.relevant_remarks ? `<div class="field"><label>Remarks (relevant_remarks)</label><div class="val">${d.relevant_remarks}</div></div>` : ""}
+    <div class="field"><label>Type / Regime</label><div class="val">${d.object_type} · ${d.valence_regime}</div></div>
+    ${d.nested_mov ? `<div class="field"><label>Nested MOV (MS §6.8)</label><div class="val">
+        <button class="nested-link" onclick="navigateToMov('${d.nested_mov}')">🪞 Open ${d.nested_mov} →</button>
+      </div></div>` : ""}
+    ${identityHtml}
+    ${interpHtml}
+    ${objectiveHtml}
+    ${bpgHtml}
+    ${tacticalHtml}
+    <div class="field"><label>Feelings</label><div class="val">${fmtAxes(d.feelings)}</div></div>
+    <div class="field"><label>Ordinances</label><div class="val">${fmtAxes(d.ordinances)}</div></div>
+  `;
+  document.getElementById("detail").classList.add("open");
+}
+
+// One row per axis the reference list defines (models.py's FEELING_AXES/
+// ORDINANCE_KEYS/SCHEMA_KEYS, sent once as data.axis_reference) -- unlike
+// fmtAxes above (which only ever lists axes this VOV happens to have
+// charged), this shows EVERY dimension the architecture defines, marking
+// the rest as unset rather than omitting them. That's the whole point of
+// "see the status of the whole vector": a blank axis is itself information (MS
+// §3.2 -- most axes are left neutral, not zero), not a gap in the display.
+function fmtFullFeelingRow(axisDef, entry) {
+  const val = entry
+    ? `<span class="val">v=${entry.v}&nbsp;&nbsp;c=${entry.c ?? "—"}</span>`
+    : `<span class="val unset">— neutral —</span>`;
+  return `<div class="vector-row">
+    <span class="key">${axisDef.label}<span class="pole">${axisDef.positive_pole} / ${axisDef.negative_pole}</span></span>
+    ${val}
+  </div>`;
+}
+
+function fmtFullEntryRow(key, entry, unsetLabel) {
+  const val = entry
+    ? `<span class="val">v=${entry.v}&nbsp;&nbsp;c=${entry.c ?? "—"}</span>`
+    : `<span class="val unset">${unsetLabel}</span>`;
+  return `<div class="vector-row"><span class="key">${key}</span>${val}</div>`;
+}
+
+// The row's HEADER (MS §6.4): every field of the row that is not the vector of feelings, ordinances and schemas, in the
+// order of the specification. A field the row does not carry is shown as unset, not hidden.
+function fmtHeaderValue(v) {
+  if (v === null || v === undefined || v === "" || (Array.isArray(v) && v.length === 0)) return `<div class="hdr-val unset">— empty —</div>`;
+  if (Array.isArray(v)) return `<div class="hdr-val">${v.map(esc).join("\n")}</div>`;
+  if (typeof v === "object") return `<div class="hdr-val">${esc(JSON.stringify(v, null, 2))}</div>`;
+  return `<div class="hdr-val">${esc(v)}</div>`;
+}
+
+function fmtHeader(d) {
+  const rows = [
+    ["priority", d.priority],
+    ["update_datetime", d.update_datetime],
+    ["vov_id", d.vov_id],
+    ["object_type", d.object_type],
+    ["object_nature", d.object_nature],
+    ["valence_regime", d.valence_regime],
+    ["nested_mov", d.nested_mov],
+    ["perceived_age", d.perceived_age],
+    ["male_female", d.male_female],
+    ["brief_description", d.brief_description],
+    ["relevant_relations", d.relevant_relations],
+    ["delta_report", d.delta_report],
+    ["relevant_remarks", d.relevant_remarks],
+    ["archived", d.archived ? "yes — in MainMemory (out of focus)" : "no — in focus"],
+  ];
+  return rows.map(([k, v]) => `<div class="hdr-key">${k}</div>${fmtHeaderValue(v)}`).join("");
+}
+
+function openVectorModal() {
+  if (!currentDetailNode || !lastData || !lastData.axis_reference) return;
+  const d = currentDetailNode.detail;
+  const ref = lastData.axis_reference;
+  const feelingsHtml = ref.feelings.map((a) => fmtFullFeelingRow(a, d.feelings[a.key])).join("");
+  const ordinancesHtml = ref.ordinances.map((k) => fmtFullEntryRow(k, d.ordinances[k], "— no demand —")).join("");
+  const schemasHtml = ref.schemas.map((k) => fmtFullEntryRow(k, d.schemas ? d.schemas[k] : null, "— not recorded —")).join("");
+  document.getElementById("vector-modal-body").innerHTML = `
+    <h2>${d.vov_id}</h2>
+    <div class="nature">Full vector — ${NATURE_LABELS[d.object_nature] || d.object_nature} · ${ref.feelings.length} Feelings, ${ref.ordinances.length} Ordinances, ${ref.schemas.length} Schemas</div>
+    <div id="vector-header"><h3>Row header (MS §6.4)</h3><div class="hdr-grid">${fmtHeader(d)}</div></div>
+    <div id="vector-columns">
+      <div><h3>Feelings (MS §3)</h3>${feelingsHtml}</div>
+      <div><h3>Ordinances (MS §4)</h3>${ordinancesHtml}</div>
+      <div><h3>Modulating Schemas (MS §5)</h3>${schemasHtml}</div>
+    </div>
+  `;
+  document.getElementById("vector-overlay").classList.add("open");
+}
+
+function closeVectorModal() {
+  document.getElementById("vector-overlay").classList.remove("open");
+}
+
+// Plain-text escape for everything the model wrote (records, bond texts): shown, never interpreted.
+function esc(t) {
+  return String(t == null ? "" : t).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+const CHANGE_KIND_LABELS = { added: "added", corrected: "corrected", world_change: "change in the world" };
+
+// One Identity record (MS §6.13): what was learned, the value before/after the architecture captured,
+// where it came from and how far to trust it, and when.
+function fmtIdentityRecord(r) {
+  const kind = CHANGE_KIND_LABELS[r.change_kind] || r.change_kind;
+  const rel = r.relation ? ` · bond ${esc(r.relation.from)} → ${esc(r.relation.to)} [${esc(r.relation.kind)}${r.relation.label ? ":" + esc(r.relation.label) : ""}]` : "";
+  return `<div style="margin:8px 0;padding:8px;border:1px solid var(--panel-border);border-radius:6px;">
+    <b>${esc(r.attribute || r.field)}</b> <span style="color:var(--text-dim)">· ${esc(kind)}${rel}</span><br>
+    ${esc(r.information)}<br>
+    ${r.value_before != null ? `<span style="color:var(--text-dim)">before:</span> ${esc(r.value_before)}<br>` : ""}
+    ${r.value_after != null ? `<span style="color:var(--text-dim)">after:</span> ${esc(r.value_after)}<br>` : ""}
+    <span style="color:var(--text-dim)">source:</span> ${esc(r.source || "—")}${r.obtained_via ? " (" + esc(r.obtained_via) + ")" : ""}
+    · <span style="color:var(--text-dim)">reliability:</span> ${r.reliability != null ? r.reliability + "/5" : "—"}<br>
+    <span style="color:var(--text-dim)">recorded at</span> ${esc(r.recorded_at)}${r.occurred_at ? ` · <span style="color:var(--text-dim)">occurred</span> ${esc(r.occurred_at)}` : ""}
+    ${r.supersedes ? `<br><span style="color:var(--text-dim)">corrects record</span> ${esc(r.supersedes)}` : ""}
+    ${r.context ? `<br><span style="color:var(--text-dim)">context:</span> ${esc(r.context)}` : ""}
+  </div>`;
+}
+
+function fmtIdentityIndex(info) {
+  return `${info.count} record(s) · ${info.corrections} correction(s) · about: ${esc((info.attributes || []).join(", ") || "—")} · latest: ${esc(info.last_recorded_at || "—")}`;
+}
+
+// The graph never carries a history; the records are fetched only when asked for, newest first, bounded.
+async function loadIdentityRecords(params, targetId) {
+  const el = document.getElementById(targetId);
+  el.textContent = "loading…";
+  try {
+    const resp = await fetch(`/api/identity?${params}&limit=10`);
+    const data = await resp.json();
+    el.innerHTML = data.records.map(fmtIdentityRecord).join("") +
+      (data.truncated ? `<div style="color:var(--text-dim)">… showing the ${data.records.length} most recent of ${data.total}</div>` : "");
+  } catch (err) {
+    el.textContent = "error loading the records";
+    console.error(err);
+  }
+}
+
+function buildKindLegend(kinds) {
+  const rows = document.getElementById("legend-rows");
+  const head = document.createElement("div");
+  head.className = "note";
+  head.textContent = "Bonds (category · label · arrow = directed)";
+  rows.appendChild(head);
+  for (const info of Object.values(kinds || {})) {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML = `<span style="display:inline-block;width:16px;height:3px;background:${info.color};flex:none"></span>${esc(info.label)}`;
+    rows.appendChild(row);
+  }
+}
+
+function buildLegend(legend) {
+  const rows = document.getElementById("legend-rows");
+  rows.innerHTML = "";
+  for (const [nature, color] of Object.entries(legend)) {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML = `<span class="swatch${nature === "Objective" ? " objective" : ""}" style="background:${color}"></span>${NATURE_LABELS[nature] || nature}`;
+    rows.appendChild(row);
+  }
+}
+
+async function loadGraph(movId) {
+  const statusEl = document.getElementById("status-label");
+  statusEl.textContent = "loading…";
+  try {
+    const url = movId ? `/api/mov?mov_id=${encodeURIComponent(movId)}` : "/api/mov";
+    const resp = await fetch(url);
+    const data = await resp.json();
+    lastData = data;
+    currentMovId = data.mov_id;
+    document.getElementById("mov-id-label").textContent = data.mov_id;
+    document.getElementById("back-btn").style.display = movStack.length ? "inline-block" : "none";
+    document.getElementById("detail").classList.remove("open"); // stale — belonged to the previous MOV's node
+    buildLegend(data.legend);
+    buildKindLegend(data.kinds);
+
+    const emptyMsg = document.getElementById("empty-msg");
+    if (!data.nodes.length) {
+      emptyMsg.style.display = "flex";
+      if (network) network.setData({ nodes: [], edges: [] });
+      statusEl.textContent = "empty";
+      return;
+    }
+    emptyMsg.style.display = "none";
+
+    const nodes = new vis.DataSet(data.nodes);
+    const edges = new vis.DataSet(data.edges);
+    const container = document.getElementById("graph");
+    const options = {
+      physics: {
+        solver: "forceAtlas2Based",
+        forceAtlas2Based: { gravitationalConstant: -60, centralGravity: 0.008, springLength: 140, springConstant: 0.09 },
+        stabilization: { iterations: 150 },
+      },
+      interaction: { hover: true, tooltipDelay: 120 },
+      nodes: { borderWidth: 2, shadow: { enabled: true, size: 8, color: "rgba(0,0,0,0.4)" } },
+      edges: { arrows: { to: false }, hoverWidth: 1.5, selectionWidth: 1.5 },
+    };
+
+    if (network) network.destroy();
+    network = new vis.Network(container, { nodes, edges }, options);
+    network.on("click", (params) => {
+      if (params.nodes.length) {
+        const node = data.nodes.find((n) => n.id === params.nodes[0]);
+        if (node) renderDetail(node);
+      } else if (params.edges.length) {
+        const edge = data.edges.find((e) => e.id === params.edges[0]);
+        if (edge && edge.detail) renderEdgeDetail(edge);
+      }
+    });
+    statusEl.textContent = `${data.nodes.length} Object(s) · ${data.edges.length} bond(s) · updated ${new Date().toLocaleTimeString("en-US")}`;
+  } catch (err) {
+    statusEl.textContent = "error loading — see the console";
+    console.error(err);
+  }
+}
+
+function navigateToMov(movId) {
+  if (movId === currentMovId) return;
+  movStack.push(currentMovId);
+  loadGraph(movId);
+}
+
+function goBack() {
+  const prev = movStack.pop();
+  loadGraph(prev); // prev is undefined only if movStack was already empty, which the button is hidden for
+}
+
+// Note: addEventListener("click", loadGraph) directly would pass the
+// click Event itself as loadGraph's movId argument -- wrapped in an
+// arrow function so "Refresh" reloads whichever MOV is on screen right
+// now (root or a nested one), not always jump back to the root.
+document.getElementById("refresh-btn").addEventListener("click", () => loadGraph(currentMovId));
+document.getElementById("back-btn").addEventListener("click", goBack);
+document.getElementById("detail-close").addEventListener("click", () => {
+  document.getElementById("detail").classList.remove("open");
+});
+document.getElementById("vector-close").addEventListener("click", closeVectorModal);
+document.getElementById("vector-overlay").addEventListener("click", (e) => {
+  if (e.target.id === "vector-overlay") closeVectorModal(); // click on the dim backdrop, not the modal box itself
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeVectorModal();
+});
+
+loadGraph();
+</script>
+</body>
+</html>

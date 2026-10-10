@@ -1,0 +1,31 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+local_mov_store.json
+local_mov_store.cycles.jsonl
+
+# Downloaded llama.cpp binaries -- large, platform-specific, not source.
+# Get them from llama.cpp's releases: https://github.com/ggml-org/llama.cpp/releases
+scripts/llamacpp/bin/
+
+# Runtime logs of a llama-server or MindReader run in the background -- regenerated every run.
+llama-server.out.log
+llama-server.err.log
+mindreader.out.log
+mindreader.err.log
+
+# finetune_capture.py: every local LLM call (prompt + completion) kept as raw material for a future
+# LoRA fine-tune -- carries the conversations, so it stays on this machine.
+data/finetune/
+
+# claude_session_client.py: the requests and answers of a Claude session standing in for the model -- they carry
+# the conversations, so they stay on this machine.
+data/claude_session/
+
+# liriel.py: the local store of a Claude-session embodiment (Liriel's memory) and the cycle files
+data/store/
+local_mov_store*
+data/*.log
+data/*.md
