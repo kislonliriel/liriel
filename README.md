@@ -93,6 +93,12 @@ python tests/ontology/verify_embodiment_cli.py   # the whole Claude Code flow wi
 python tests/ontology/verify_telegram_rules.py   # allowed-chat list, AI disclosure, --whoami
 ```
 
+To run them all at once (it prints PASS/FAIL per check and exits non-zero if any fails; works on Windows, macOS and Linux):
+
+```bash
+python tests/run_all.py
+```
+
 Every `tests/ontology/verify_*.py` runs the same way (see [tests/ontology/README.md](tests/ontology/README.md)), as do
 `tests/verify_reply_limit.py` and `tests/finetune/verify_capture.py`; `verify_ontology_pg.py` needs a Postgres database (below).
 

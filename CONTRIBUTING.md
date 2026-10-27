@@ -23,11 +23,11 @@ You do not need to be a programmer to contribute. Some of the most useful help i
 
    ```bash
    pip install -r requirements.txt
-   for f in tests/ontology/verify_*.py tests/verify_reply_limit.py tests/finetune/verify_capture.py; do
-     case "$f" in *verify_ontology_pg.py) continue;; esac
-     python "$f" > /dev/null || echo "FAIL $f"
-   done
+   python tests/run_all.py
    ```
+
+   It prints one PASS/FAIL line per check, shows the output of the failing ones, and exits non-zero if any fails
+   (`verify_ontology_pg.py` is skipped: it needs Postgres).
 
 3. Look at the open [issues](https://github.com/kislonliriel/liriel/issues). Comment on one before you start, so two people do not do the same
    work.

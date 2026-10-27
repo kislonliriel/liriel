@@ -22,8 +22,5 @@ voice delivery and the Telegram rules, among others. Every one runs the same way
 exits non-zero on failure. To run all of them except the Postgres one (from the repository root):
 
 ```
-for f in tests/ontology/verify_*.py tests/verify_reply_limit.py tests/finetune/verify_capture.py; do
-  case "$f" in *verify_ontology_pg.py) continue;; esac
-  python "$f" > /dev/null || echo "FAIL $f"
-done
+python tests/run_all.py
 ```
